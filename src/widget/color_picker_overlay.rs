@@ -22,8 +22,9 @@ use iced::{
     touch,
     widget::{
         canvas::{self, LineCap, Path, Stroke},
-        text::{self, Wrapping},
+        text,
         Button, Column, Row,
+        button,
     },
     Alignment, Border, Color, Element, Event, Length, Padding, Pixels, Point, Rectangle, Renderer,
     Shadow, Size, Vector,
@@ -91,20 +92,15 @@ where
 
         ColorPickerOverlay {
             state: overlay_state,
-            cancel_button: Button::new(
-                iced::widget::Text::new("X")
-                    .align_x(Horizontal::Center)
-                    .width(Length::Fill),
-            )
-            .width(Length::Fill)
-            .on_press(on_cancel.clone()),
-            submit_button: Button::new(
-                iced::widget::Text::new("J")
-                    .align_x(Horizontal::Center)
-                    .width(Length::Fill),
-            )
-            .width(Length::Fill)
-            .on_press(on_cancel), // Sending a fake message
+
+            cancel_button: button(
+                text("Cancel").align_x(Horizontal::Center).width(Length::Fill)
+            ).width(Length::Fill).on_press(on_cancel.clone()),
+
+            submit_button:  button(
+                text("Accept").align_x(Horizontal::Center).width(Length::Fill),
+            ).width(Length::Fill).on_press(on_cancel),
+            
             on_submit,
             position,
             class,
@@ -600,11 +596,27 @@ where
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<Message>,
     ) {
+
+        if cursor.is_over(layout.bounds()) {
+            // Always clear cache when we're interacting with the overlay
+            if matches!(
+                event,
+                Event::Mouse(mouse::Event::CursorMoved { .. })
+                    | Event::Mouse(mouse::Event::ButtonPressed(_))
+                    | Event::Mouse(mouse::Event::ButtonReleased(_))
+            ) {
+                self.clear_cache();
+            }
+        }
+
         // Store the initial color to detect changes
         let initial_color = self.state.color;
         
         if event::Status::Captured == self.on_event_keyboard(&event) {
-            self.clear_cache();
+            //self.clear_cache();
+            shell.invalidate_layout();
+            shell.invalidate_widgets();
+            shell.capture_event();
             return;
         }
 
@@ -657,12 +669,19 @@ where
             .expect("widget: Layout should have a submit button layout for a ColorPicker");
         
         self.submit_button = Button::new(
-            iced::widget::Text::new("✓")
+            iced::widget::Text::new("Accept")
                 .align_x(Horizontal::Center)
                 .width(Length::Fill),
         )
         .width(Length::Fill)
         .on_press((self.on_submit)(self.state.color));
+        self.submit_button = button(
+                text("Accept")
+                .align_x(Horizontal::Center)
+                .width(Length::Fill)
+            )
+            .width(Length::Fill)
+            .on_press((self.on_submit)(self.state.color));
         
         self.submit_button.update(
             &mut self.tree.children[1],
@@ -675,16 +694,12 @@ where
             &submit_button_layout.bounds(),
         );
 
-        // Check if color has changed
-        if self.state.color != initial_color {
-            self.clear_cache();
-        }
-
-        // Also clear cache if any status was captured
-        if hsv_color_status == event::Status::Captured
-            || rgba_color_status == event::Status::Captured
-        {
-            self.clear_cache();
+        if cursor.is_over(layout.bounds()) {
+            if let Event::Mouse(_) = event {
+                shell.invalidate_layout();
+                shell.invalidate_widgets();
+                shell.capture_event();
+            }
         }
     }
 
@@ -1230,7 +1245,7 @@ fn hsv_color<Message, Theme>(
             for column in 0..column_count {
                 for row in 0..row_count {
                     let saturation = f32::from(column) / frame.width();
-                    let value = 1.0 - (f32::from(row) / frame.height());
+                    let value = (f32::from(row) / frame.height());
 
                     frame.fill_rectangle(
                         Point::new(f32::from(column), f32::from(row)),
@@ -1254,7 +1269,7 @@ fn hsv_color<Message, Theme>(
             };
 
             let saturation_x = hsv_color.saturation * frame.width();
-            let value_y = (1.0 - hsv_color.value) * frame.height();
+            let value_y = hsv_color.value * frame.height();
 
             frame.stroke(
                 &Path::line(
@@ -1423,7 +1438,7 @@ fn rgba_color(
                 align_y: Vertical::Center,
                 line_height: text::LineHeight::Relative(1.3),
                 shaping: text::Shaping::Advanced,
-                wrapping: Wrapping::default(),
+                wrapping: text::Wrapping::default(),
             },
             Point::new(
                 label_layout.bounds().center_x(),
@@ -1509,7 +1524,7 @@ fn rgba_color(
                 align_y: Vertical::Center,
                 line_height: iced::widget::text::LineHeight::Relative(1.3),
                 shaping: iced::widget::text::Shaping::Advanced,
-                wrapping: Wrapping::default(),
+                wrapping: text::Wrapping::default(),
             },
             Point::new(
                 value_layout.bounds().center_x(),
@@ -1653,7 +1668,7 @@ fn hex_text(
             align_y: Vertical::Center,
             line_height: text::LineHeight::Relative(1.3),
             shaping: text::Shaping::Basic,
-            wrapping: Wrapping::default(),
+            wrapping: text::Wrapping::default(),
         },
         Point::new(bounds.center_x(), bounds.center_y()),
         Color {

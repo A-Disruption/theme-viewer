@@ -81,6 +81,24 @@ impl CustomPalette {
         palette
     }
 
+    pub fn pallet_to_rust_code(&self) -> String {
+        format!(
+            "let custom_palette = Palette {{\n    background: {},\n    text: {},\n    primary: {},\n    success: {},\n    warning: {},\n    danger: {},\n}};",
+            color_to_rust_code(self.background),
+            color_to_rust_code(self.text),
+            color_to_rust_code(self.primary),
+            color_to_rust_code(self.success),
+            color_to_rust_code(self.warning),
+            color_to_rust_code(self.danger),
+        )
+    }
+
+    pub fn theme_to_rust_code(&self) -> String {
+        format!(
+            "\nlet custom_theme = iced::Theme::custom( \"Custom\".to_string() , custom_palette );"
+        )
+    }
+
     pub fn to_rust_code(&self) -> String {
         format!(
             "pub const CUSTOM: Self = Self {{\n    background: {},\n    text: {},\n    primary: {},\n    success: {},\n    warning: {},\n    danger: {},\n}};",
@@ -92,6 +110,8 @@ impl CustomPalette {
             color_to_rust_code(self.danger),
         )
     }
+
+    // let new_theme = iced::Theme::custom(name, self.to_iced_palette);
 
     pub fn to_iced_palette(&self) -> Palette {
         Palette {
@@ -504,7 +524,11 @@ impl PaletteBuilder {
                             .style(button::secondary),
                     ].align_y(iced::Alignment::Center).spacing(10),
                     container(
-                        text(self.palette.to_rust_code()).size(12)
+                        column!(
+                            text(self.palette.pallet_to_rust_code()).size(12),
+                            text(self.palette.theme_to_rust_code()).size(12),
+                        )
+                        
                     )
                     .width(Length::Fill)
                     .style(container::bordered_box)
