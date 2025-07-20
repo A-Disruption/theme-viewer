@@ -7,6 +7,7 @@ use iced::{Color, Element, Task, Length};
 use iced::widget::{button, checkbox, column, combo_box, container, pick_list, progress_bar, radio, row, slider, text, text_input, toggler, tooltip, Container, Space};
 use std::sync::LazyLock;
 use crate::widget::color_picker::color_picker;
+use crate::widget::new_color_picker::color_button;
 
 #[derive(Debug, Clone)]
 pub struct CustomPalette {
@@ -192,6 +193,9 @@ pub enum Message {
     SubmitBackgroundColor(Color),
     CancelBackgroundColor,
     Tick,
+
+    //testing Color_picker widget
+    ColorPickerChanged(ColorField, Color),
 
     // Push Theme back to main.rs state
     UpdateTheme(iced::Theme),
@@ -402,12 +406,40 @@ impl PaletteBuilder {
             Message::UpdateTheme(theme) => {
                 Action::UpdateTheme(theme)
             }
+            Message::ColorPickerChanged(field, color) => {
+                match field {
+                    ColorField::Background => {
+                        self.palette.background = color;
+                        self.background_input = color_to_hex(color);
+                    }
+                    ColorField::Text => {
+                        self.palette.text = color;
+                        self.text_input = color_to_hex(color);
+                    }
+                    ColorField::Primary => {
+                        self.palette.primary = color;
+                        self.primary_input = color_to_hex(color);
+                    }
+                    ColorField::Success => {
+                        self.palette.success = color;
+                        self.success_input = color_to_hex(color);
+                    }
+                    ColorField::Warning => {
+                        self.palette.warning = color;
+                        self.warning_input = color_to_hex(color);
+                    }
+                    ColorField::Danger => {
+                        self.palette.danger = color;
+                        self.danger_input = color_to_hex(color);
+                    }
+                }
+                let theme = self.palette.to_iced_theme_frfr("Custom");
+                Action::UpdateTheme(theme)
+            }
         }
     }
 
     pub fn view(&self) -> Element<Message> {
-        let background_color_button = button("").on_press(Message::ChooseBackgroundColor);
-        let background_color_picker = color_picker(self.show_background_picker, self.background_color, background_color_button, Message::CancelBackgroundColor, Message::SubmitBackgroundColor);
 
         let content = row![
             // Left panel - Controls
@@ -503,14 +535,94 @@ impl PaletteBuilder {
                     
                     Space::with_height(16),
 
+                    // Color Selection - Updated to use color buttons
                     row![
                         column![
                             column![
-                                background_color_picker
+                                text("Background"),
+                                row![
+                                    color_button(
+                                        self.palette.background,
+                                        |color| Message::ColorPickerChanged(ColorField::Background, color)
+                                    )
+                                    .width(30)
+                                    .height(20),
+                                    text_input("Background", &self.background_input)
+                                        .on_input(|s| Message::ColorChanged(ColorField::Background, s))
+                                ].align_y(iced::Alignment::Center).spacing(5),
+                            ].spacing(5),
+                            
+                            column![
+                                text("Primary"),
+                                row![
+                                    color_button(
+                                        self.palette.primary,
+                                        |color| Message::ColorPickerChanged(ColorField::Primary, color)
+                                    )
+                                    .width(30)
+                                    .height(20),
+                                    text_input("Primary", &self.primary_input)
+                                        .on_input(|s| Message::ColorChanged(ColorField::Primary, s))
+                                ].align_y(iced::Alignment::Center).spacing(5),
+                            ].spacing(5),
+                            
+                            column![
+                                text("Warning"),
+                                row![
+                                    color_button(
+                                        self.palette.warning,
+                                        |color| Message::ColorPickerChanged(ColorField::Warning, color)
+                                    )
+                                    .width(30)
+                                    .height(20),
+                                    text_input("Warning", &self.warning_input)
+                                        .on_input(|s| Message::ColorChanged(ColorField::Warning, s))
+                                ].align_y(iced::Alignment::Center).spacing(5),
                             ].spacing(5),
                         ].spacing(10),
+                        
                         column![
+                            column![
+                                text("Text"),
+                                row![
+                                    color_button(
+                                        self.palette.text,
+                                        |color| Message::ColorPickerChanged(ColorField::Text, color)
+                                    )
+                                    .width(30)
+                                    .height(20),
+                                    text_input("Text", &self.text_input)
+                                        .on_input(|s| Message::ColorChanged(ColorField::Text, s))
+                                ].align_y(iced::Alignment::Center).spacing(5),
+                            ].spacing(5),
                             
+                            column![
+                                text("Success"),
+                                row![
+                                    color_button(
+                                        self.palette.success,
+                                        |color| Message::ColorPickerChanged(ColorField::Success, color)
+                                    )
+                                    .width(30)
+                                    .height(20),
+                                    text_input("Success", &self.success_input)
+                                        .on_input(|s| Message::ColorChanged(ColorField::Success, s))
+                                ].align_y(iced::Alignment::Center).spacing(5),
+                            ].spacing(5),
+                            
+                            column![
+                                text("Danger"),
+                                row![
+                                    color_button(
+                                        self.palette.danger,
+                                        |color| Message::ColorPickerChanged(ColorField::Danger, color)
+                                    )
+                                    .width(30)
+                                    .height(20),
+                                    text_input("Danger", &self.danger_input)
+                                        .on_input(|s| Message::ColorChanged(ColorField::Danger, s))
+                                ].align_y(iced::Alignment::Center).spacing(5),
+                            ].spacing(5),
                         ].spacing(10),
                     ].spacing(20),
 
