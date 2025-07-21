@@ -11,6 +11,7 @@ iced = { version = "0.14.0-dev", features = [
     "debug",
     "canvas",
 ] }
+arboard = { version="3.6.0" }
 
 [build-dependencies]
 iced_fontello = "0.13"

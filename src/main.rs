@@ -28,6 +28,7 @@ struct ThemeViewer {
     text_input: String,
     password: String,
     show_password: bool,
+    disabled_value: String,
     radio_value: Option<RadioOption>,
     slider_value: f32,
     picklist: Option<Language>,
@@ -78,6 +79,7 @@ impl ThemeViewer {
             text_input: String::new(),
             password: String::new(),
             show_password: false,
+            disabled_value: String::new(),
             radio_value: None,
             slider_value: 1_f32,
             picklist: None,
@@ -364,7 +366,7 @@ impl ThemeViewer {
                     ].align_y(iced::Alignment::Center).spacing(10).width(640),
                 ].spacing(5),
                 column![
-
+                    text_input("Disabled Text Input", &self.disabled_value).width(650)
                 ].spacing(5),
                 column![
 

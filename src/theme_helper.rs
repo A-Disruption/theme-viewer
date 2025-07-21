@@ -1,13 +1,8 @@
-use iced::theme::{Palette, palette};
-use iced::theme;
-use iced::wgpu::naga::back;
-use iced::widget::text::LineHeight;
-use iced::Alignment::Center;
-use iced::{Color, Element, Task, Length};
-use iced::widget::{button, checkbox, column, combo_box, container, pick_list, progress_bar, radio, row, slider, text, text_input, toggler, tooltip, Container, Space};
-use std::sync::LazyLock;
-use crate::widget::color_picker::color_picker;
-use crate::widget::new_color_picker::color_button;
+use iced::theme::{self, Palette};
+use iced::{Color, Element, Length};
+use iced::widget::{button, checkbox, column, container, pick_list, progress_bar, radio, row, slider, text, text_input, toggler, Space};
+use arboard::Clipboard;
+use crate::widget::color_picker::color_button;
 
 #[derive(Debug, Clone)]
 pub struct CustomPalette {
@@ -100,19 +95,19 @@ impl CustomPalette {
         )
     }
 
-    pub fn to_rust_code(&self) -> String {
-        format!(
-            "pub const CUSTOM: Self = Self {{\n    background: {},\n    text: {},\n    primary: {},\n    success: {},\n    warning: {},\n    danger: {},\n}};",
-            color_to_rust_code(self.background),
-            color_to_rust_code(self.text),
-            color_to_rust_code(self.primary),
-            color_to_rust_code(self.success),
-            color_to_rust_code(self.warning),
-            color_to_rust_code(self.danger),
-        )
+    pub fn copy_complete_code_to_clipboard(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Combine both function outputs
+        let complete_code = format!("{}{}", 
+            self.pallet_to_rust_code(), 
+            self.theme_to_rust_code()
+        );
+        
+        // Create clipboard instance and set contents
+        let mut clipboard = Clipboard::new()?;
+        clipboard.set_text(complete_code)?;
+        
+        Ok(())
     }
-
-    // let new_theme = iced::Theme::custom(name, self.to_iced_palette);
 
     pub fn to_iced_palette(&self) -> Palette {
         Palette {
@@ -172,7 +167,7 @@ fn hex_to_color(hex: &str) -> Result<Color, ()> {
 }
 
 #[derive(Debug, Clone)]
-enum ColorField {
+pub enum ColorField {
     Background,
     Text,
     Primary,
@@ -188,13 +183,7 @@ pub enum Message {
     ColorChanged(ColorField, String),
     CopyCode,
 
-    //primary color Color Picker messages
-    ChooseBackgroundColor,
-    SubmitBackgroundColor(Color),
-    CancelBackgroundColor,
-    Tick,
-
-    //testing Color_picker widget
+    //Color_picker widget
     ColorPickerChanged(ColorField, Color),
 
     // Push Theme back to main.rs state
@@ -209,7 +198,7 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone)]
-enum PresetType {
+pub enum PresetType {
     Blue,
     Purple,
     Green,
@@ -226,25 +215,6 @@ pub struct PaletteBuilder {
     pub success_input: String,
     pub warning_input: String,
     pub danger_input: String,
-
-    // Color Tracking without a String
-    pub background_color: Color,
-    pub show_background_picker: bool,
-
-    pub text_input_color: Color,
-    pub show_text_input_picker: bool,
-
-    pub primary_input_color: Color,
-    pub show_primary_input_picker: bool,
-
-    pub success_input_color: Color,
-    pub show_success_input_picker: bool,
-
-    pub warning_input_color: Color,
-    pub show_warning_input_picker: bool,
-
-    pub danger_input_color: Color,
-    pub show_danger_input_picker: bool,
 
     // Custom Widget Styles
     pub button_style: Option<button::Style>,
@@ -266,7 +236,6 @@ pub struct PaletteBuilder {
 impl Default for PaletteBuilder {
     fn default() -> Self {
         let palette = CustomPalette::default();
-        let theme = palette.to_iced_theme("Custom");
         Self {
             background_input: color_to_hex(palette.background),
             text_input: color_to_hex(palette.text),
@@ -276,26 +245,6 @@ impl Default for PaletteBuilder {
             danger_input: color_to_hex(palette.danger),
             palette: palette.clone(),
             is_dark_mode: false,
-
-            //keeping colors in state
-            background_color: palette.background,
-            show_background_picker: false,
-
-            text_input_color: palette.text,
-            show_text_input_picker: false,
-
-            primary_input_color: palette.primary,
-            show_primary_input_picker: false,
-
-            success_input_color: palette.success,
-            show_success_input_picker: false,
-
-            warning_input_color: palette.warning,
-            show_warning_input_picker: false,
-
-            danger_input_color: palette.danger,
-            show_danger_input_picker: false,
-
 
             button_style: None,
             check_box_style: None,
@@ -383,24 +332,10 @@ impl PaletteBuilder {
                 Action::None
             }
             Message::CopyCode => {
-                // In a real app, you'd copy to clipboard here
-                println!("Generated code:\n{}", self.palette.to_rust_code());
-                Action::None
-            }
-            Message::ChooseBackgroundColor => {
-                self.show_background_picker = true;
-                Action::None
-            }
-            Message::SubmitBackgroundColor(color) => {
-                self.background_color = color;
-                self.show_background_picker = false;
-                Action::None
-            }
-            Message::CancelBackgroundColor => {
-                self.show_background_picker = false;
-                Action::None
-            }
-            Message::Tick => {
+                    match self.palette.copy_complete_code_to_clipboard() {
+                        Ok(()) => println!("Code copied to clipboard successfully!"),
+                        Err(e) => eprintln!("Failed to copy to clipboard: {}", e),
+                    };
                 Action::None
             }
             Message::UpdateTheme(theme) => {
@@ -442,7 +377,6 @@ impl PaletteBuilder {
     pub fn view(&self) -> Element<Message> {
 
         let content = row![
-            // Left panel - Controls
             container(
                 column![
                     text("Iced Palette Builder").size(24),
@@ -475,76 +409,13 @@ impl PaletteBuilder {
                     row![
                         column![
                             column![
-                                column![
-                                    text("Background"),
-                                    row![
-                                        button(" ").style(|_, _| create_background_color(&self.background_input) ).width(30).height(20),
-                                        text_input("Background", &self.background_input)
-                                    ].align_y(iced::Alignment::Center).spacing(5),
-                                ].spacing(5),
-                            ],
-                            column![
-                                column![
-                                    text("Primary"),
-                                    row![
-                                        button(" ").style(|_, _| create_background_color(&self.primary_input) ).width(30).height(20),
-                                        text_input("Primary", &self.primary_input)
-                                    ].align_y(iced::Alignment::Center).spacing(5),
-                                ].spacing(5),
-                            ],
-                            column![
-                                column![
-                                    text("Warning"),
-                                    row![
-                                        button(" ").style(|_, _| create_background_color(&self.warning_input) ).width(30).height(20),
-                                        text_input("Warning", &self.warning_input)
-                                    ].align_y(iced::Alignment::Center).spacing(5),
-                                ].spacing(5),
-                            ],
-                        ].spacing(10),
-                        column![
-                            column![
-                                column![
-                                    text("Text"),
-                                    row![
-                                        button(" ").style(|_, _| create_background_color(&self.text_input) ).width(30).height(20),
-                                        text_input("Text", &self.text_input)
-                                    ].align_y(iced::Alignment::Center).spacing(5),
-                                ].spacing(5),
-                            ],
-                            column![
-                                column![
-                                    text("Success"),
-                                    row![
-                                        button(" ").style(|_, _| create_background_color(&self.success_input) ).width(30).height(20),
-                                        text_input("Success", &self.success_input)
-                                    ].align_y(iced::Alignment::Center).spacing(5),
-                                ].spacing(5),
-                            ],
-                            column![
-                                column![
-                                    text("Danger"),
-                                    row![
-                                        button(" ").style(|_, _| create_background_color(&self.danger_input) ).width(30).height(20),
-                                        text_input("Danger", &self.danger_input)
-                                    ].align_y(iced::Alignment::Center).spacing(5),
-                                ].spacing(5),
-                            ],
-                        ].spacing(10),
-                    ].spacing(20),
-                    
-                    Space::with_height(16),
-
-                    // Color Selection - Updated to use color buttons
-                    row![
-                        column![
-                            column![
                                 text("Background"),
                                 row![
                                     color_button(
                                         self.palette.background,
                                         |color| Message::ColorPickerChanged(ColorField::Background, color)
                                     )
+                                    .title("Background Color")
                                     .width(30)
                                     .height(20),
                                     text_input("Background", &self.background_input)
@@ -559,6 +430,7 @@ impl PaletteBuilder {
                                         self.palette.primary,
                                         |color| Message::ColorPickerChanged(ColorField::Primary, color)
                                     )
+                                    .title("Primary Color")
                                     .width(30)
                                     .height(20),
                                     text_input("Primary", &self.primary_input)
@@ -573,6 +445,7 @@ impl PaletteBuilder {
                                         self.palette.warning,
                                         |color| Message::ColorPickerChanged(ColorField::Warning, color)
                                     )
+                                    .title("Warning Color")
                                     .width(30)
                                     .height(20),
                                     text_input("Warning", &self.warning_input)
@@ -589,6 +462,7 @@ impl PaletteBuilder {
                                         self.palette.text,
                                         |color| Message::ColorPickerChanged(ColorField::Text, color)
                                     )
+                                    .title("Text Color")
                                     .width(30)
                                     .height(20),
                                     text_input("Text", &self.text_input)
@@ -603,6 +477,7 @@ impl PaletteBuilder {
                                         self.palette.success,
                                         |color| Message::ColorPickerChanged(ColorField::Success, color)
                                     )
+                                    .title("Success Color")
                                     .width(30)
                                     .height(20),
                                     text_input("Success", &self.success_input)
@@ -617,6 +492,7 @@ impl PaletteBuilder {
                                         self.palette.danger,
                                         |color| Message::ColorPickerChanged(ColorField::Danger, color)
                                     )
+                                    .title("Danger Color")
                                     .width(30)
                                     .height(20),
                                     text_input("Danger", &self.danger_input)
@@ -630,8 +506,8 @@ impl PaletteBuilder {
                     
                     // Generated code section
                     row![
-                        text("Generated Rust Code").size(16),
-                        button("Copy Code")
+//                        text("Generated Rust Code").size(16),
+                        button("Copy to clipboard")
                             .on_press(Message::CopyCode)
                             .style(button::secondary),
                     ].align_y(iced::Alignment::Center).spacing(10),
