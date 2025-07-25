@@ -203,7 +203,7 @@ impl<'a, Message: Clone + 'a> Widget<Message, iced::Theme, Renderer> for ColorBu
     fn overlay<'b>(
         &'b mut self,
         state: &'b mut Tree,
-        layout: Layout<'_>,
+        _layout: Layout<'_>,
         _renderer: &Renderer,
         viewport: &Rectangle,
         _translation: Vector,

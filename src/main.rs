@@ -1,4 +1,4 @@
-use iced::{Theme, Element, Task, Size, Length};
+use iced::{Alignment, Element, Length, Size, Task, Theme};
 use iced::window::Settings;
 use iced::advanced::graphics::core::window;
 use iced::widget::{button, checkbox, column, combo_box, container, horizontal_space, pick_list, progress_bar, radio, responsive, row, scrollable, slider, text, text_input, toggler, Action};
@@ -6,8 +6,7 @@ use std::collections::BTreeMap;
 
 mod theme_helper;
 mod widget;
-// use widget::color_picker;
-// use widget::new_color_picker;
+mod widget_helper;
 
 fn main() {
     iced::daemon(ThemeViewer::new, ThemeViewer::update, ThemeViewer::view)
@@ -20,9 +19,11 @@ fn main() {
 struct ThemeViewer {
     windows: BTreeMap<window::Id, Window>,
     theme_builder: theme_helper::PaletteBuilder,
+    widget_builder: widget_helper::WidgetVisualizer,
     themes: Vec<Theme>,
     theme: Option<Theme>,
     show_custom_theme_menu: bool,
+    show_widget_builder: bool,
     text_input_1: String,
     checkboxes: bool,
     text_input: String,
@@ -41,6 +42,7 @@ struct ThemeViewer {
 enum Message {
     ChooseTheme(Theme),
     ShowThemeBuilder,
+    ShowWidgetBuilder,
     ButtonPressed,
     CheckBox(bool),
     EnteringText(String),
@@ -54,6 +56,8 @@ enum Message {
 
     // Theme Helper Messages
     ThemeHelper(theme_helper::Message),
+    // Widget Builder Messages
+    WidgetHelper(widget_helper::Message),
 
     //window handles
     WindowClosed(iced::window::Id),
@@ -71,9 +75,11 @@ impl ThemeViewer {
         let theme_viewer = Self {
             windows: BTreeMap::new(),
             theme_builder: theme_helper::PaletteBuilder::new(),
+            widget_builder: widget_helper::WidgetVisualizer::new(),
             themes: themes,
             theme: Some(iced::theme::Theme::Dark),
             show_custom_theme_menu: false,
+            show_widget_builder: false,
             text_input_1: String::new(),
             checkboxes: true,
             text_input: String::new(),
@@ -116,11 +122,11 @@ impl ThemeViewer {
             }
             Message::ShowThemeBuilder => {
                 self.show_custom_theme_menu = !self.show_custom_theme_menu;
-
-
-                //Task::none()
-
                 Task::done(Message::RequestOpenWindow(WindowEnum::CustomBuilder))
+            }
+            Message::ShowWidgetBuilder => {
+                self.show_widget_builder = !self.show_widget_builder;
+                Task::none()
             }
             Message::ButtonPressed => {
                 println!("Button pressed!");
@@ -178,6 +184,17 @@ impl ThemeViewer {
                 }
             }
 
+            // Widget Helper
+            Message::WidgetHelper(msg) => {
+                match widget_helper::WidgetVisualizer::update(&mut self.widget_builder, msg) {
+                    widget_helper::Action::Run(task) => {
+                        return task.map(Message::WidgetHelper)
+                    }
+                    widget_helper::Action::None => { }
+                }
+                Task::none()
+            }
+
             //window handles
             Message::WindowClosed(window_id) => {
                 self.windows.remove(&window_id);
@@ -233,6 +250,12 @@ impl ThemeViewer {
 
     fn view(&self, window_id: window::Id) -> Element<Message> {
 
+        let widget_picker = toggler(self.show_widget_builder).on_toggle(|_| Message::ShowWidgetBuilder);
+        let widget_toggler = column![
+            text("Toggle Widget Builder"),
+            widget_picker
+        ].align_x(Alignment::Center).spacing(5);
+
         let theme_pick_list = pick_list(
             self.themes.clone(), 
             self.theme.clone(), 
@@ -243,30 +266,6 @@ impl ThemeViewer {
             text("Theme").size(18),
             theme_pick_list
         ].spacing(5);
-
-
-/*         let section_name = if !self.show_custom_theme_menu {
-            text("↓    Show Custom Theme Builder").shaping(text::Shaping::Advanced).style(text::secondary)
-        } else {
-            text("→    Hide Custom Theme Builder").shaping(text::Shaping::Advanced).style(text::secondary)
-        };
-
-        let conditional_theme_widgets = if !self.show_custom_theme_menu {
-                column![
-                    horizontal_space()
-                ]                  
-            } else {
-                column![
-                    theme_helper::PaletteBuilder::view(&self.theme_builder).map(Message::ThemeHelper)
-                ]
-            };
-
-        let custom_theme_section = container(
-            column![
-                button(section_name).style(button::text).on_press(Message::ShowThemeBuilder).width(Length::Fill),
-                conditional_theme_widgets
-            ].width(Length::Fill),
-        ).style(container::bordered_box); */
 
         let buttons = container(
             column![
@@ -453,7 +452,12 @@ impl ThemeViewer {
 
         let main_window_content = container(
             column![
-                theme_selection,
+                row![
+                    theme_selection,
+                    horizontal_space(),
+                    widget_toggler,
+                ],
+                
 //                custom_theme_section, 
                 buttons,
                 checkboxes,
@@ -466,7 +470,13 @@ impl ThemeViewer {
         let window_view = match self.windows.get(&window_id) {
             Some(window) => match window.windowtype {
                 WindowEnum::Main => {
-                    main_window_content
+                    if !self.show_widget_builder {
+                        main_window_content
+                    }
+                    else {
+                        self.widget_builder.view().map(Message::WidgetHelper)
+                    }
+                    
                 }
                 WindowEnum::CustomBuilder => {
                     container(

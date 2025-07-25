@@ -277,7 +277,7 @@ impl PaletteBuilder {
         Self::default()
     }
 
-    pub fn update(&mut self, message: Message) -> Action { //Update to Action
+    pub fn update(&mut self, message: Message) -> Action { 
         match message {
             Message::SetMode(is_dark) => {
                 self.is_dark_mode = is_dark;
