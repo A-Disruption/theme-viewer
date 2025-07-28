@@ -6,25 +6,20 @@ use iced::{
         text::Renderer as _,
         widget::{self, tree::Tree},
         Clipboard, Layout, Overlay as _, Renderer as _, Shell, Widget,
-    },
-    alignment::Vertical,
-    border::Radius,
-    event, keyboard, mouse, touch,
-    Border, Color, Element, Event, Length, Padding, Point, Rectangle, 
-    Shadow, Size, Theme, Vector,
+    }, alignment::Vertical, border::Radius, event, keyboard, mouse, touch, widget::button, Border, Color, Element, Event, Length, Padding, Point, Rectangle, Shadow, Size, Theme, Vector
 };
 
 /// A button that opens a draggable overlay with custom content
 #[allow(missing_debug_implementations)]
 pub struct OverlayButton<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer> 
 where
-    Theme: Catalog,
+    Theme: Catalog + button::Catalog,
 {
     /// The button label
     label: String,
     /// The overlay title
     title: String,
-    /// The content to display in the overlay
+    /// Function to create the overlay content (called each time)
     content: Element<'a, Message, Theme, Renderer>,
     /// Optional width for the overlay (defaults to 400px)
     overlay_width: Option<f32>,
@@ -36,33 +31,50 @@ where
     height: Length,
     /// Button padding
     padding: Padding,
+    /// Callback when the overlay is opened
+    on_open: Option<Box<dyn Fn() -> Message + 'a>>,
     /// Callback when the overlay is closed
     on_close: Option<Box<dyn Fn() -> Message + 'a>>,
-    /// Class of the OverlayButton
-    class: Theme::Class<'a>,
+    /// Class of the Overlay
+    class: <Theme as Catalog>::Class<'a>,
+    /// Get full window size for overlay bounds
+    window_size: Option<Rectangle>,
+    /// Status from button widget to match style
+    status: Option<button::Status>,
+    /// Button class
+    button_class: <Theme as button::Catalog>::Class<'a>,
+    /// is_press to match button status
+    is_pressed: bool,
 }
 
 impl<'a, Message, Theme, Renderer> OverlayButton<'a, Message, Theme, Renderer> 
 where 
-    Theme: Catalog,
+    Renderer: iced::advanced::Renderer,
+    Theme: Catalog + button::Catalog,
 {
-    /// Creates a new overlay button with the given label and content
+    /// Creates a new overlay button with the given label and content function
     pub fn new(
         label: impl Into<String>,
         title: impl Into<String>,
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
     ) -> Self {
+
         Self {
             label: label.into(),
             title: title.into(),
             content: content.into(),
             overlay_width: None,
             overlay_height: None,
-            width: Length::Shrink,
-            height: Length::Shrink,
-            padding: Padding::new(10.0),
+            width: Length::Fixed(50.0),
+            height: Length::Fixed(30.0),
+            padding: DEFAULT_PADDING,
+            on_open: None,
             on_close: None,
-            class: Theme::default(),
+            class: <Theme as Catalog>::default(),
+            window_size: None,
+            status: None,
+            button_class: <Theme as button::Catalog>::default(),
+            is_pressed: false,
         }
     }
 
@@ -96,25 +108,48 @@ where
         self
     }
 
+    /// Sets a callback for when the overlay is opened
+    pub fn on_open(mut self, callback: impl Fn() -> Message + 'a) -> Self {
+        self.on_open = Some(Box::new(callback));
+        self
+    }
+
     /// Sets a callback for when the overlay is closed
     pub fn on_close(mut self, callback: impl Fn() -> Message + 'a) -> Self {
         self.on_close = Some(Box::new(callback));
         self
     }
 
-    /// Sets the Style of the OverlayButton
+    /// Sets the style of the button using button's styling system
     #[must_use]
-    pub fn style(mut self, style: impl Fn(&Theme) -> Style + 'a) -> Self
+    pub fn style(mut self, style: impl Fn(&Theme, button::Status) -> button::Style + 'a) -> Self
     where
-        Theme::Class<'a>: From<StyleFn<'a, Theme>>,
+        <Theme as button::Catalog>::Class<'a>: From<button::StyleFn<'a, Theme>>,
+    {
+        self.button_class = (Box::new(style) as button::StyleFn<'a, Theme>).into();
+        self
+    }
+
+    /// Sets the button class directly
+    #[must_use]
+    pub fn button_class(mut self, class: impl Into<<Theme as button::Catalog>::Class<'a>>) -> Self {
+        self.button_class = class.into();
+        self
+    }
+
+    /// Sets the overlay style
+    #[must_use]
+    pub fn overlay_style(mut self, style: impl Fn(&Theme) -> Style + 'a) -> Self
+    where
+        <Theme as Catalog>::Class<'a>: From<StyleFn<'a, Theme>>,
     {
         self.class = (Box::new(style) as StyleFn<'a, Theme>).into();
         self
     }
 
-    /// Sets the class of the OverlayButton
+    /// Sets the class of the Overlay
     #[must_use]
-    pub fn class(mut self, class: impl Into<Theme::Class<'a>>) -> Self {
+    pub fn overlay_class(mut self, class: impl Into<<Theme as Catalog>::Class<'a>>) -> Self {
         self.class = class.into();
         self
     }
@@ -155,7 +190,7 @@ where
     }
 
     fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
+        vec![Tree::new(&(self.content))]
     }
 
     fn diff(&self, tree: &mut Tree) {
@@ -190,36 +225,27 @@ where
         _viewport: &Rectangle,
     ) 
     where 
-        Theme: Catalog,
+        Theme: Catalog + button::Catalog,
     {
         let state = tree.state.downcast_ref::<State>();
-        
-        // Only draw the button if overlay is not open - key insight from float.rs
-        if state.is_open {
-            return;
-        }
 
         let bounds = layout.bounds();
-        let is_hovered = cursor.is_over(bounds);
-        let style = <Theme as Catalog>::style(theme, &self.class);
+//        let is_hovered = cursor.is_over(bounds);
+        let style = <Theme as button::Catalog>::style(theme, &self.button_class, self.status.unwrap_or(button::Status::Active));
 
         // Draw button background
         renderer.fill_quad(
             renderer::Quad {
                 bounds,
                 border: Border {
-                    color: style.border_color,
+                    color: style.border.color,
                     width: 1.0,
                     radius: 4.0.into(),
                 },
                 shadow: Shadow::default(),
                 snap: true,
             },
-            if is_hovered {
-                style.background.scale_alpha(0.8)
-            } else {
-                style.background
-            },
+            style.background.unwrap()
         );
 
         // Draw button text
@@ -254,7 +280,6 @@ where
     ) {
         let state = tree.state.downcast_mut::<State>();
 
-        // Only handle button events when overlay is closed - like float.rs
         if state.is_open {
             return;
         }
@@ -263,9 +288,47 @@ where
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
                 if cursor.is_over(layout.bounds()) {
+                    self.status = Some(button::Status::Pressed);
+                    self.is_pressed = true;
                     state.is_open = true;
                     shell.invalidate_layout();
                 }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerLifted { .. }) => {
+                if self.is_pressed {
+                        self.is_pressed = false;
+                        self.status = Some(button::Status::Active);
+                    }
+            }
+            Event::Mouse(mouse::Event::CursorMoved { position: _ }) => {
+                if cursor.is_over(layout.bounds()) {
+                    self.status = Some(button::Status::Hovered);
+                    shell.invalidate_layout();
+                } else {
+                    self.status = Some(button::Status::Active);
+                    shell.invalidate_layout();
+                }
+            }
+            Event::Window(iced::window::Event::Opened { position: _, size }) => {
+                let window_size = Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: size.width,
+                    height: size.height,
+                };
+
+                self.window_size = Some(window_size);
+            }
+            Event::Window(iced::window::Event::Resized(size)) => {
+                let window_size = Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: size.width,
+                    height: size.height,
+                };
+
+                self.window_size = Some(window_size);
             }
             _ => {}
         }
@@ -296,7 +359,7 @@ where
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        _layout: Layout<'_>,
+        layout: Layout<'_>,
         renderer: &Renderer,
         viewport: &Rectangle,
         offset: Vector,
@@ -307,14 +370,16 @@ where
             return None;
         }
 
-        // Initialize position on first open, accounting for offset like float.rs
         if state.position == Point::ORIGIN {
             let overlay_width = self.overlay_width.unwrap_or(400.0);
             let overlay_height = self.overlay_height.unwrap_or(300.0);
 
+            let viewport_width = self.window_size.unwrap_or(viewport.clone()).width;
+            let viewport_height = self.window_size.unwrap_or(viewport.clone()).height;
+
             state.position = Point::new(
-                (viewport.width - overlay_width) / 2.0 + offset.x,
-                (viewport.height - overlay_height) / 2.0 + offset.y,
+                (viewport_width - overlay_width) / 2.0 + offset.x,
+                (viewport_height - overlay_height) / 2.0 + offset.y,
             );
         }
 
@@ -341,12 +406,20 @@ where
             tree: content_tree,
             width: self.overlay_width.unwrap_or(400.0),
             height: self.overlay_height,
-            viewport: *viewport,
+            viewport: self.window_size.unwrap_or(*viewport),
             on_close: self.on_close.as_deref(),
             content_layout: Some(content_layout),
         })))
     }
 }
+
+/// The default [`Padding`] of a [`Button`]. Using for Overlay Button to match iced::widget::button
+pub(crate) const DEFAULT_PADDING: Padding = Padding {
+    top: 5.0,
+    bottom: 5.0,
+    right: 10.0,
+    left: 10.0,
+};
 
 struct Overlay<'a, 'b, Message, Theme, Renderer> 
 where 
@@ -406,7 +479,7 @@ where
         let bounds = layout.bounds();
         let draw_style = <Theme as Catalog>::style(&theme, &self.class);
 
-        // Use layer rendering like float.rs for proper isolation
+        // Use layer rendering for proper overlay isolation
         renderer.with_layer(self.viewport, |renderer| {
             // Draw background with shadow
             renderer.fill_quad(
@@ -632,36 +705,50 @@ where
             _ => {}
         }
 
-        // Forward events to content only if not in dragging mode
-        if !self.state.is_dragging {
-            let content_bounds = Rectangle {
-                x: bounds.x + 20.0,
-                y: bounds.y + 60.0,
-                width: bounds.width - 40.0,
-                height: bounds.height - 80.0,
-            };
+        // Forward events to content
+        let content_bounds = Rectangle {
+            x: bounds.x + 20.0,
+            y: bounds.y + 60.0,
+            width: bounds.width - 40.0,
+            height: bounds.height - 80.0,
+        };
 
-            if cursor.is_over(content_bounds) {
-                let adjusted_cursor = cursor.position().map(|position| {
+        // Always forward keyboard events and mouse events over content area
+        let should_forward_event = match event {
+            // Always forward keyboard events
+            Event::Keyboard(_) => true,
+            // Forward mouse events when over content area and not dragging
+            Event::Mouse(_) | Event::Touch(_) => {
+                !self.state.is_dragging && cursor.is_over(content_bounds)
+            },
+            // Forward other events
+            _ => true,
+        };
+
+        if should_forward_event {
+            let adjusted_cursor = if cursor.is_over(content_bounds) {
+                cursor.position().map(|position| {
                     mouse::Cursor::Available(Point::new(
                         position.x - content_bounds.x,
                         position.y - content_bounds.y,
                     ))
-                }).unwrap_or(mouse::Cursor::Unavailable);
+                }).unwrap_or(mouse::Cursor::Unavailable)
+            } else {
+                mouse::Cursor::Unavailable
+            };
 
-                // Use the stored content layout
-                if let Some(ref content_layout) = self.content_layout {
-                    self.content.as_widget_mut().update(
-                        self.tree,
-                        event,
-                        Layout::new(content_layout),
-                        adjusted_cursor,
-                        renderer,
-                        clipboard,
-                        shell,
-                        &Rectangle::new(Point::ORIGIN, content_bounds.size()),
-                    );
-                }
+            // Use the stored content layout
+            if let Some(ref content_layout) = self.content_layout {
+                self.content.as_widget_mut().update(
+                    self.tree,
+                    event,
+                    Layout::new(content_layout),
+                    adjusted_cursor,
+                    renderer,
+                    clipboard,
+                    shell,
+                    &Rectangle::new(Point::ORIGIN, content_bounds.size()),
+                );
             }
         }
 
@@ -775,7 +862,8 @@ pub fn overlay_button<'a, Message, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
 ) -> OverlayButton<'a, Message, Theme, Renderer> 
 where 
-    Theme: Catalog,
+    Renderer: iced::advanced::Renderer,
+    Theme: Catalog + button::Catalog,
 {
     OverlayButton::new(label, title, content)
 }
@@ -850,3 +938,111 @@ impl Catalog for iced::Theme {
         class(self)
     }
 }
+
+
+
+// #[cfg(test)]
+// mod example {
+//     use super::*;
+//     use iced::{
+//         widget::{button, checkbox, column, text, text_input},
+//         Element, Length, Task,
+//     };
+// 
+//     #[derive(Debug, Clone)]
+//     enum Message {
+//         OverlayCheckboxToggled(bool),
+//         TextInputChanged(String),
+//         ButtonPressed,
+//         OverlayOpened,
+//         OverlayClosed,
+//     }
+// 
+//     struct App {
+//         overlay_checkbox: bool,
+//         text_input_value: String,
+//     }
+// 
+//     impl Default for App {
+//         fn default() -> Self {
+//             Self {
+//                 overlay_checkbox: false,
+//                 text_input_value: String::new(),
+//             }
+//         }
+//     }
+// 
+//     impl App {
+//         fn update(&mut self, message: Message) -> Task<Message> {
+//             match message {
+//                 Message::OverlayCheckboxToggled(checked) => {
+//                     self.overlay_checkbox = checked;
+//                 }
+//                 Message::TextInputChanged(value) => {
+//                     self.text_input_value = value;
+//                 }
+//                 Message::ButtonPressed => {
+//                     println!("Button pressed! Checkbox: {}, Text: {}", 
+//                             self.overlay_checkbox, self.text_input_value);
+//                 }
+//                 Message::OverlayOpened => {
+//                     println!("Overlay opened");
+//                 }
+//                 Message::OverlayClosed => {
+//                     println!("Overlay closed");
+//                 }
+//             }
+//             Task::none()
+//         }
+// 
+//         fn view(&self) -> Element<Message> {
+//             // Create the overlay content - this will stay connected to your app state
+//             let overlay_content = column![
+//                 text("Overlay Dialog").size(20),
+//                 text("This content is connected to the main app state:"),
+//                 checkbox("Enable Feature", self.overlay_checkbox)
+//                     .on_toggle(Message::OverlayCheckboxToggled),
+//                 text_input("Type something...", &self.text_input_value)
+//                     .on_input(Message::TextInputChanged),
+//                 button("Do Something")
+//                     .on_press(Message::ButtonPressed),
+//                 text(format!("Current state - Checkbox: {}, Text: '{}'", 
+//                            self.overlay_checkbox, self.text_input_value))
+//                     .size(12),
+//             ]
+//             .spacing(15)
+//             .padding(20)
+//             .into();
+// 
+//             // Create the overlay button
+//             let overlay_btn = overlay_button(
+//                 "Open Modal Dialog", 
+//                 "Example Overlay",
+//                 overlay_content,
+//             )
+//             .overlay_width(450.0)
+//             .overlay_height(350.0)
+//             .on_open(|| Message::OverlayOpened)
+//             .on_close(|| Message::OverlayClosed);
+// 
+//             column![
+//                 text("Overlay Button Example").size(24),
+//                 text("Click the button to open a modal with interactive content:"),
+//                 overlay_btn,
+//                 text(format!("Main app state - Checkbox: {}, Text: '{}'", 
+//                            self.overlay_checkbox, self.text_input_value))
+//                     .size(14),
+//             ]
+//             .spacing(20)
+//             .padding(40)
+//             .into()
+//         }
+//     }
+// 
+//     // This would be your main function if this were a standalone app
+//     #[allow(dead_code)]
+//     fn run_example() -> iced::Result {
+//         iced::application(|| {App::default()}, App::update, App::view)
+//             .run()
+//     }
+// }

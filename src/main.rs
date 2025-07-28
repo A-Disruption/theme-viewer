@@ -1,17 +1,18 @@
-use iced::{Alignment, Element, Length, Size, Task, Theme};
+use iced::{Alignment, Element, Length, Size, Task, Theme, Subscription, event};
 use iced::window::Settings;
 use iced::advanced::graphics::core::window;
 use iced::widget::{button, checkbox, column, combo_box, container, horizontal_space, pick_list, progress_bar, radio, responsive, row, scrollable, slider, text, text_input, toggler, Action};
 use std::collections::BTreeMap;
 
-mod theme_helper;
 mod widget;
+mod theme_helper;
 mod widget_helper;
 
 fn main() {
     iced::daemon(ThemeViewer::new, ThemeViewer::update, ThemeViewer::view)
         .title(ThemeViewer::title)
         .theme(ThemeViewer::theme)
+        .subscription(ThemeViewer::subscription)
         .run()
         .unwrap()
 }
@@ -200,7 +201,8 @@ impl ThemeViewer {
                 self.windows.remove(&window_id);
                 if self.windows.is_empty() {
                     iced::exit()
-                } else {
+                }
+                else {
                     Task::none()
                 }
             },
@@ -496,6 +498,10 @@ impl ThemeViewer {
 
         window_view
     }
+
+    fn subscription(&self) -> Subscription<Message> {
+        event::listen_with(handle_event)
+    }
 }
 
 
@@ -558,5 +564,12 @@ impl Window {
             title: title,
             windowtype: window_type,
         }
+    }
+}
+
+fn handle_event(event: event::Event, _status: event::Status, id: iced::window::Id) -> Option<Message> {
+    match event {
+        event::Event::Window(window::Event::Closed) => Some(Message::WindowClosed(id)),
+        _ => None,
     }
 }
