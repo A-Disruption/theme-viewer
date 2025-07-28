@@ -734,7 +734,8 @@ impl WidgetVisualizer {
 
             WidgetType::TextInput => {
                 let props = &widget.properties;
-                let mut input = text_input(&props.text_input_placeholder, &props.text_input_value)
+                let input = text_input(&props.text_input_placeholder, &props.text_input_value)
+                    .on_input(|value| Message::TextInputChanged(widget.id, value))
                     .size(props.text_input_size)
                     .padding(props.text_input_padding)
                     .width(props.width)
