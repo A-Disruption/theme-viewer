@@ -97,19 +97,25 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
     match change {
         PropertyChange::Width(value) => properties.width = value,
         PropertyChange::Height(value) => properties.height = value,
+        PropertyChange::AlignItems(value) => properties.align_items = value,
+
         PropertyChange::PaddingTop(value) => properties.padding.top = value,
         PropertyChange::PaddingRight(value) => properties.padding.right = value,
         PropertyChange::PaddingBottom(value) => properties.padding.bottom = value,
         PropertyChange::PaddingLeft(value) => properties.padding.left = value,
+        PropertyChange::Spacing(value) => properties.spacing = value,
+
         PropertyChange::BorderWidth(value) => properties.border_width = value,
         PropertyChange::BorderRadius(value) => properties.border_radius = value,
         PropertyChange::BorderColor(value) => properties.border_color = value,
+
         PropertyChange::BackgroundColor(value) => properties.background_color = value,
-        PropertyChange::Spacing(value) => properties.spacing = value,
+
         PropertyChange::TextContent(value) => properties.text_content = value,
         PropertyChange::TextSize(value) => properties.text_size = value,
         PropertyChange::TextColor(value) => properties.text_color = value,
         PropertyChange::Font(value) => properties.font = value,
+
         PropertyChange::ButtonStyle(value) => properties.button_style = value,
         
         // TextInput properties
@@ -620,7 +626,8 @@ impl WidgetVisualizer {
                     .spacing(props.spacing)
                     .width(props.width)
                     .height(props.height)
-                    .padding(props.padding);
+                    .padding(props.padding)
+                    .align_y(props.align_items);
                 
                 if widget.children.is_empty() {
                     content = content.push(text("Row Item 1"));
@@ -660,7 +667,8 @@ impl WidgetVisualizer {
                     .spacing(props.spacing)
                     .width(props.width)
                     .height(props.height)
-                    .padding(props.padding);
+                    .padding(props.padding)
+                    .align_x(props.align_items);
                 
                 if widget.children.is_empty() {
                     content = content.push(text("Column Item 1"));
@@ -2202,6 +2210,8 @@ impl Properties {
             }
             WidgetType::Text => {
                 props.text_content = "Sample Text".to_string();
+                props.width = Length::Shrink;
+                props.height = Length::Shrink;
             }
             WidgetType::TextInput => {
                 props.text_input_placeholder = "Enter text...".to_string();
@@ -2271,20 +2281,6 @@ impl std::fmt::Display for AlignmentOption {
             AlignmentOption::Start => write!(f, "Start"),
             AlignmentOption::Center => write!(f, "Center"),
             AlignmentOption::End => write!(f, "End"),
-        }
-    }
-}
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RadioOption { Option1, Option2, Option3 }
-
-impl ToString for RadioOption {
-    fn to_string(&self) -> String {
-        match self {
-            RadioOption::Option1 => "Option 1".to_string(),
-            RadioOption::Option2 => "Option 2".to_string(),
-            RadioOption::Option3 => "Option 3".to_string(),
         }
     }
 }
