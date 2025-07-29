@@ -8,6 +8,7 @@ use iced::{
 };
 use std::collections::HashMap;
 use crate::widget::generic_overlay::overlay_button;
+use crate::widget::tree;
 
 // ============================================================================
 // CORE DATA STRUCTURES - Simplified ID-based approach
@@ -17,6 +18,8 @@ use crate::widget::generic_overlay::overlay_button;
 #[derive(Debug, Clone)]
 pub enum PropertyChange {
     // Common properties
+    WidgetName(String),
+    ShowWidgetBounds(bool),
     Width(Length),
     Height(Length),
     PaddingTop(f32),
@@ -104,6 +107,9 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::PaddingBottom(value) => properties.padding.bottom = value,
         PropertyChange::PaddingLeft(value) => properties.padding.left = value,
         PropertyChange::Spacing(value) => properties.spacing = value,
+
+        PropertyChange::WidgetName(value) => properties.widget_name = value,
+        PropertyChange::ShowWidgetBounds(value) => properties.show_widget_bounds = value,
 
         PropertyChange::BorderWidth(value) => properties.border_width = value,
         PropertyChange::BorderRadius(value) => properties.border_radius = value,
@@ -196,6 +202,16 @@ impl WidgetHierarchy {
     pub fn root(&self) -> &Widget {
         &self.root
     }
+
+    pub fn can_add_to_root(&self, widget_type: WidgetType) -> bool {
+        if self.root.children.is_empty() {
+            // Root can only have Column or Row as first child
+            matches!(widget_type, WidgetType::Column | WidgetType::Row)
+        } else {
+            // Root already has a child, can't add more
+            false
+        }
+    }
     
     pub fn selected_id(&self) -> Option<WidgetId> {
         self.selected_id
@@ -244,15 +260,44 @@ impl WidgetHierarchy {
     pub fn widget_exists(&self, id: WidgetId) -> bool {
         self.get_widget_by_id(id).is_some()
     }
-    
-    pub fn add_child(&mut self, parent_id: WidgetId, widget_type: WidgetType) -> Result<WidgetId, String> {
-        // Check if parent exists and can have children
+
+    pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> bool {
         if let Some(parent) = self.get_widget_by_id(parent_id) {
+            // Check if parent can have children
             if !can_have_children(&parent.widget_type) {
-                return Err(format!("{:?} cannot have children", parent.widget_type));
+                return false;
+            }
+            
+            // Special constraint for root container
+            if parent_id == self.root.id {
+                if parent.children.is_empty() {
+                    // Root can only have Column or Row as first child
+                    matches!(widget_type, WidgetType::Column | WidgetType::Row)
+                } else {
+                    // Root already has a child, can't add more
+                    false
+                }
+            } else {
+                // Non-root containers can add any compatible child
+                true
             }
         } else {
-            return Err("Parent widget not found".to_string());
+            false
+        }
+    }
+    
+    pub fn add_child(&mut self, parent_id: WidgetId, widget_type: WidgetType) -> Result<WidgetId, String> {
+        // Check if we can add this child
+        if !self.can_add_child(parent_id, widget_type) {
+            if parent_id == self.root.id {
+                if self.root.children.is_empty() {
+                    return Err("Root container can only have Column or Row as its first child".to_string());
+                } else {
+                    return Err("Root container can only have one child".to_string());
+                }
+            } else {
+                return Err(format!("Cannot add {:?} to this parent", widget_type));
+            }
         }
         
         // Create new widget
@@ -363,6 +408,10 @@ impl WidgetVisualizer {
     
     pub fn update(&mut self, message: Message) -> Action {
         match message {
+            Message::TreeAction => {
+            
+            }
+
             Message::SelectWidget(id) => {
                 self.hierarchy.select_widget(id);
             }
@@ -531,29 +580,50 @@ impl WidgetVisualizer {
     }
     
     fn build_add_child_controls(&self, parent_id: WidgetId) -> Element<Message> {
-        column![
-            text("Add Child Widget").size(14),
-            pick_list(
-                vec![
-                    WidgetType::Container,
-                    WidgetType::Row,
-                    WidgetType::Column,
-                    WidgetType::Button,
-                    WidgetType::Text,
-                    WidgetType::TextInput,
-                    WidgetType::Checkbox,
-                    WidgetType::Radio,
-                    WidgetType::Slider,
-                    WidgetType::ProgressBar,
-                    WidgetType::Toggler,
-                    WidgetType::PickList,
-                    WidgetType::Space,
-                    WidgetType::Rule,
-                ],
-                None::<WidgetType>,
-                move |widget_type| Message::AddChild(parent_id, widget_type),
-            )
-        ].spacing(5).into()
+        let available_types = if parent_id == self.hierarchy.root().id {
+            // Root container constraints
+            if self.hierarchy.root().children.is_empty() {
+                // Root is empty, can only add Column or Row
+                vec![WidgetType::Column, WidgetType::Row]
+            } else {
+                // Root already has a child, can't add more
+                vec![]
+            }
+        } else {
+            // Regular containers can have all widget types
+            vec![
+                WidgetType::Container,
+                WidgetType::Row,
+                WidgetType::Column,
+                WidgetType::Button,
+                WidgetType::Text,
+                WidgetType::TextInput,
+                WidgetType::Checkbox,
+                WidgetType::Radio,
+                WidgetType::Slider,
+                WidgetType::ProgressBar,
+                WidgetType::Toggler,
+                WidgetType::PickList,
+                WidgetType::Space,
+                WidgetType::Rule,
+            ]
+        };
+        
+        if available_types.is_empty() {
+            column![
+                text("Add Child Widget").size(14),
+                text("Root container can only have one child").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
+            ].spacing(5).into()
+        } else {
+            column![
+                text("Add Child Widget").size(14),
+                pick_list(
+                    available_types,
+                    None::<WidgetType>,
+                    move |widget_type| Message::AddChild(parent_id, widget_type),
+                )
+            ].spacing(5).into()
+        }
     }
     
     fn build_preview_panel(&self) -> Element<Message> {
@@ -876,6 +946,14 @@ impl WidgetVisualizer {
             }
         }
     }
+
+    fn build_editor_for_widget_by_id(&self, widget_id: WidgetId) -> Element<Message> {
+        if let Some(widget) = self.hierarchy.get_widget_by_id(widget_id) {
+            self.build_editor_for_widget(widget, widget_id)
+        } else {
+            text("Widget not found").into()
+        }
+    }
     
     fn build_editor_for_widget(&self, widget: &Widget, widget_id: WidgetId) -> Element<Message> {
         let controls = match widget.widget_type {
@@ -910,6 +988,23 @@ impl WidgetVisualizer {
         
         column![
             text("Container Properties").size(16),
+
+            
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
+
 
              // Alignment controls
             row![
@@ -982,9 +1077,9 @@ impl WidgetVisualizer {
                     }).step(1.0),
                     text(format!("{:.0}", props.border_radius)).size(12).center(),
                 ].spacing(5).width(Length::Fill),
-/*                 column![
+/*                 column![  // will implement Color_picker widget here (maybe)
                     text("Border Color").size(12),
-                ].spacing(5).width(Length::Fill), */ // will implement Color_picker widget here (maybe)
+                ].spacing(5).width(Length::Fill), */ 
             ].spacing(15),
             
             // Padding controls
@@ -1083,6 +1178,21 @@ impl WidgetVisualizer {
         
         column![
             text("Row Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Spacing control
             column![
@@ -1190,6 +1300,21 @@ impl WidgetVisualizer {
         
         column![
             text("Column Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Spacing control
             column![
@@ -1295,6 +1420,21 @@ impl WidgetVisualizer {
         
         column![
             text("Button Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Button text
             column![
@@ -1393,6 +1533,21 @@ impl WidgetVisualizer {
         
         column![
             text("Text Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Text content
             column![
@@ -1460,6 +1615,21 @@ impl WidgetVisualizer {
         
         column![
             text("Text Input Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Placeholder text
             column![
@@ -1536,6 +1706,21 @@ impl WidgetVisualizer {
         
         column![
             text("Checkbox Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Label text
             column![
@@ -1612,6 +1797,21 @@ impl WidgetVisualizer {
         
         column![
             text("Toggler Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Label text
             column![
@@ -1688,6 +1888,21 @@ impl WidgetVisualizer {
         
         column![
             text("Radio Button Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Label text
             column![
@@ -1822,6 +2037,21 @@ impl WidgetVisualizer {
         
         column![
             text("Pick List Properties").size(16),
+
+            row![
+                //Widget's Name
+                column![
+                    text("Widget Name"),
+                    text_input("Name", &props.widget_name)
+                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+                ],
+
+                // Toggle Widget Bounds
+                checkbox("Show Widget Bounds", props.show_widget_bounds)
+                    .on_toggle(move |v| {
+                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
+                    }),
+            ].align_y(Alignment::Center),
             
             // Placeholder text
             column![
@@ -1917,6 +2147,9 @@ impl WidgetVisualizer {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    // Tree Hierarchy
+    TreeAction,
+
     // Widget Operations
     SelectWidget(WidgetId),
     DeleteWidget(WidgetId),
@@ -2030,9 +2263,30 @@ fn can_have_children(widget_type: &WidgetType) -> bool {
     )
 }
 
+// Helper function to get widget type icon for tree display
+fn get_widget_icon(widget_type: WidgetType) -> &'static str {
+    match widget_type {
+        WidgetType::Container => "📦",
+        WidgetType::Row => "↔️",
+        WidgetType::Column => "↕️",
+        WidgetType::Button => "🔘",
+        WidgetType::Text => "📝",
+        WidgetType::TextInput => "📝",
+        WidgetType::Checkbox => "☑️",
+        WidgetType::Radio => "🔘",
+        WidgetType::Slider => "🎛️",
+        WidgetType::ProgressBar => "📊",
+        WidgetType::Toggler => "🔀",
+        WidgetType::PickList => "📋",
+        WidgetType::Scrollable => "📜",
+        WidgetType::Space => "⬜",
+        WidgetType::Rule => "➖",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Properties {
-    pub width: Length,
+pub width: Length,
     pub height: Length,
     pub padding: Padding,
     
@@ -2106,6 +2360,9 @@ pub struct Properties {
     // Scrollable properties
     pub scrollable_width: f32,
     pub scrollable_height: f32,
+
+    pub show_widget_bounds: bool,
+    pub widget_name: String,
 }
 
 impl Default for Properties {
@@ -2194,6 +2451,9 @@ impl Default for Properties {
             // Scrollable defaults
             scrollable_width: 300.0,
             scrollable_height: 200.0,
+
+            show_widget_bounds: false,
+            widget_name: String::new(),
         }
     }
 }

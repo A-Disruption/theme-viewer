@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 mod widget;
 mod theme_helper;
 mod widget_helper;
+mod tree_example;
 
 fn main() {
     iced::daemon(ThemeViewer::new, ThemeViewer::update, ThemeViewer::view)
@@ -21,10 +22,12 @@ struct ThemeViewer {
     windows: BTreeMap<window::Id, Window>,
     theme_builder: theme_helper::PaletteBuilder,
     widget_builder: widget_helper::WidgetVisualizer,
+    tree_example: tree_example::App,
     themes: Vec<Theme>,
     theme: Option<Theme>,
     show_custom_theme_menu: bool,
     show_widget_builder: bool,
+    show_tree_example: bool,
     text_input_1: String,
     checkboxes: bool,
     text_input: String,
@@ -44,6 +47,7 @@ enum Message {
     ChooseTheme(Theme),
     ShowThemeBuilder,
     ShowWidgetBuilder,
+    ShowTreeExample,
     ButtonPressed,
     CheckBox(bool),
     EnteringText(String),
@@ -59,6 +63,8 @@ enum Message {
     ThemeHelper(theme_helper::Message),
     // Widget Builder Messages
     WidgetHelper(widget_helper::Message),
+    // Tree Example Builder Messages
+    TreeHelper(tree_example::Message),
 
     //window handles
     WindowClosed(iced::window::Id),
@@ -77,10 +83,12 @@ impl ThemeViewer {
             windows: BTreeMap::new(),
             theme_builder: theme_helper::PaletteBuilder::new(),
             widget_builder: widget_helper::WidgetVisualizer::new(),
+            tree_example: tree_example::App::new(),
             themes: themes,
             theme: Some(iced::theme::Theme::Dark),
             show_custom_theme_menu: false,
             show_widget_builder: false,
+            show_tree_example: false,
             text_input_1: String::new(),
             checkboxes: true,
             text_input: String::new(),
@@ -127,6 +135,10 @@ impl ThemeViewer {
             }
             Message::ShowWidgetBuilder => {
                 self.show_widget_builder = !self.show_widget_builder;
+                Task::none()
+            }
+            Message::ShowTreeExample => {
+                self.show_tree_example = !self.show_tree_example;
                 Task::none()
             }
             Message::ButtonPressed => {
@@ -196,6 +208,17 @@ impl ThemeViewer {
                 Task::none()
             }
 
+            // Tree Example Helper
+            Message::TreeHelper(msg) => {
+                match tree_example::App::update(&mut self.tree_example, msg) {
+                    tree_example::Action::Run(task) => {
+                        return task.map(Message::TreeHelper)
+                    }
+                    tree_example::Action::None => { }
+                }
+                Task::none()
+            }
+
             //window handles
             Message::WindowClosed(window_id) => {
                 self.windows.remove(&window_id);
@@ -256,6 +279,12 @@ impl ThemeViewer {
         let widget_toggler = column![
             text("Toggle Widget Builder"),
             widget_picker
+        ].align_x(Alignment::Center).spacing(5);
+
+        let tree_picker = toggler(self.show_tree_example).on_toggle(|_| Message::ShowTreeExample);
+        let tree_example_toggler = column![
+            text("Toggle Tree Example"),
+            tree_picker
         ].align_x(Alignment::Center).spacing(5);
 
         let theme_pick_list = pick_list(
@@ -457,7 +486,10 @@ impl ThemeViewer {
                 row![
                     theme_selection,
                     horizontal_space(),
-                    widget_toggler,
+                    column![
+                        widget_toggler,
+                        tree_example_toggler,
+                    ],
                 ],
                 
 //                custom_theme_section, 
@@ -472,8 +504,10 @@ impl ThemeViewer {
         let window_view = match self.windows.get(&window_id) {
             Some(window) => match window.windowtype {
                 WindowEnum::Main => {
-                    if !self.show_widget_builder {
+                    if !self.show_widget_builder && !self.show_tree_example {
                         main_window_content
+                    } else if !self.show_widget_builder {
+                        self.tree_example.view().map(Message::TreeHelper)
                     }
                     else {
                         self.widget_builder.view().map(Message::WidgetHelper)
