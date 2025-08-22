@@ -1,173 +1,124 @@
-use iced::{widget::{button, container, text, column, row}, Application, Task, Element, Settings, Theme};
-use crate::widget::tree::{Tree, TreeNode, NodeId};    //{tree_node, DropPosition, TreeManager, TreeNodeContent};
-
-//#[derive(Debug, Clone)]
-/* pub enum Message {
-    ToggleNode(String),
-    SelectNode(String),
-    DropNode(Vec<String>, String, DropPosition),
-    ButtonPressed(String),
-} */
+use iced::{
+    alignment::{Horizontal, Vertical},
+    widget::{
+        button, checkbox, column, container, horizontal_rule, horizontal_space, pick_list, progress_bar, radio, row, scrollable, slider, text, text_input, toggler, vertical_space, Button, Column, Container, Radio, Row, Space, Text, TextInput
+    },
+    Alignment, Background, Border, Color, Element, Font, Length::{self, FillPortion}, Padding, Shadow, Task,
+    Theme, Vector,
+};
+use std::collections::HashMap;
+use crate::widget::tree::{self, branch, tree_handle, DropInfo, DropPosition};
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    TreeToggle(NodeId, bool),
-    TreeDragStart(NodeId, iced::Point),
-    TreeDragOver(NodeId, NodeId, iced::Point),
-    TreeDrop(NodeId, NodeId, iced::Point),
-    ButtonPressed(String),
+    TreeToggle(String),
+    TreeSelect(String),
+    ButtonPressed,
+    HandleBranchDropped(DropInfo),
 }
 
-pub struct App { }
+pub struct App {
+    selected_item: Option<String>,
+}
 
 impl App {
-
     pub fn new() -> Self {
-        Self {  }
+        Self {
+            selected_item: None,
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Action {
-/*         match message {
-            Message::ToggleNode(id) => {
-                println!("Toggled node: {}", id);
-            }
-            Message::SelectNode(id) => {
-                println!("Selected node: {}", id);
-            }
-            Message::DropNode(dragged_nodes, target, position) => {
-                println!("Dropped {:?} onto {} at position {:?}", dragged_nodes, target, position);
-            }
-            Message::ButtonPressed(id) => {
-                println!("Button pressed: {}", id);
-                eprintln!("🔥 BUTTON ACTUALLY PRESSED: {}", id);
-            }
-        } */
-
+        println!("🚀 APP.update called with message: {:?}", message);
         match message {
-            Message::TreeToggle(node_id, expanded) => {
-                println!("Node {:?} toggled to expanded: {}", node_id, expanded);
+            Message::TreeToggle(id) => {
+                println!("Toggled: {}", id);
+                // Tree state is now managed internally by the widget
             }
-            Message::TreeDragStart(node_id, position) => {
-                println!("Started dragging node {:?} at {:?}", node_id, position);
+            Message::TreeSelect(id) => {
+                self.selected_item = Some(id.clone());
+                println!("Selected: {}", id);
             }
-            Message::TreeDragOver(dragged_id, target_id, position) => {
-                println!("Dragging {:?} over {:?} at {:?}", dragged_id, target_id, position);
+            Message::ButtonPressed => {
+                println!("🎉 BUTTON WAS PRESSED! 🎉");
             }
-            Message::TreeDrop(dragged_id, target_id, position) => {
-                println!("Dropped {:?} onto {:?} at {:?}", dragged_id, target_id, position);
-            }
-            Message::ButtonPressed(label) => {
-                println!("Button '{}' was pressed!", label);
+            Message::HandleBranchDropped(drop_info) => {
+                // This is where you handle the actual reordering of your data
+                println!("🎯 DROP OCCURRED!");
+                println!("  Dragged IDs: {:?}", drop_info.dragged_ids);
+                println!("  Target ID: {:?}", drop_info.target_id);
+                println!("  Position: {:?}", drop_info.position);
+                
+                // Example of how to handle the drop:
+                match drop_info.position {
+                    DropPosition::Before => {
+                        // Move dragged items before the target
+                        // You would update your data structure here
+                        println!("  -> Moving items BEFORE target");
+                    }
+                    DropPosition::After => {
+                        // Move dragged items after the target
+                        // You would update your data structure here
+                        println!("  -> Moving items AFTER target");
+                    }
+                    DropPosition::Into => {
+                        // Make dragged items children of the target
+                        // You would update your data structure here
+                        println!("  -> Moving items INTO target (as children)");
+                    }
+                }
+                
+                // After updating your data structure, you would typically
+                // rebuild the tree widget in the view() method
             }
         }
-
         Action::None
     }
 
     pub fn view(&self) -> Element<Message> {
+        let tree_widget = tree_handle(vec![
+            branch(button("Fruit").on_press(Message::ButtonPressed))
+                .with_children(vec![
+                    branch(text("Strawberries")),
+                    branch(text("Blueberries")),
+                    branch(container(text("Citrus")).padding(5))
+                        .with_children(vec![
+                            branch(text("Oranges")),
+                            branch(text("Lemons")),
+                        ]).accepts_drops(),
+                ]).accepts_drops(),
+            branch(button("Vegetables").on_press(Message::ButtonPressed))
+                .with_children(vec![
+                    branch(text("Carrots")),
+                    branch(text("Broccoli")),
+                ]).accepts_drops(),
+            branch(
+                row![
+                    button("button1").on_press(Message::ButtonPressed), 
+                    button("button2").on_press(Message::ButtonPressed)
+                ].spacing(50)
+            ).accepts_drops(),
+        ]).on_drop(Message::HandleBranchDropped);
 
-   // Create some content elements with buttons to test event forwarding
-    let root_content = row![
-        text("Root Node"),
-        button("Root Button").on_press(Message::ButtonPressed("root".to_string()))
-    ]
-    .spacing(5);
-
-    let child1_content = row![
-        text("Child 1"),
-        button("Child 1 Button").on_press(Message::ButtonPressed("child1".to_string()))
-    ]
-    .spacing(5);
-
-    let child2_content = row![
-        text("Child 2"),
-        button("Child 2 Button").on_press(Message::ButtonPressed("child2".to_string()))
-    ]
-    .spacing(5);
-
-    let grandchild_content = row![
-        text("Grandchild"),
-        button("Grandchild Button").on_press(Message::ButtonPressed("grandchild".to_string()))
-    ]
-    .spacing(5);
-
-    // Build the tree structure
-    let grandchild = TreeNode::new(NodeId::new(4), grandchild_content);
-
-    let child1 = TreeNode::new(NodeId::new(2), child1_content)
-        .with_child(grandchild);
-
-    let child2 = TreeNode::new(NodeId::new(3), child2_content);
-
-    let root = TreeNode::new(NodeId::new(1), root_content)
-        .with_children([child1, child2]);
-
-    let tree = Tree::new()
-        .with_root(root)
-        .width(iced::Length::Fill)
-        .height(iced::Length::Shrink)
-        .indent_size(30.0)
-        .node_height(60.0)
-        .on_toggle(Message::TreeToggle)
-        .on_drag_start(Message::TreeDragStart)
-        .on_drag_over(Message::TreeDragOver)
-        .on_drop(Message::TreeDrop);
-
-    container(
-            column![
-                text("Draggable Tree Example").size(24),
-                tree
-            ]
-            .spacing(20)
-        )
+        column![
+            iced::widget::text("Tree Widget Example").size(24),
+            tree_widget,
+            if let Some(ref selected) = self.selected_item {
+                iced::widget::text(format!("Selected: {}", selected))
+            } else {
+                iced::widget::text("Nothing selected")
+            }
+        ]
+        .spacing(20)
         .padding(20)
         .into()
+    }
+}
 
-
-/*         // Build the tree fresh each time
-        let mut tree_manager = TreeManager::new();
-
-        // Add root nodes
-        tree_manager
-            .add(tree_node("root1", || {
-                button("Root Node 1").on_press(Message::ButtonPressed("root1".to_string())).into()
-            }).accepts_drops())
-            .add(tree_node("root2", || {
-                container(text("Root Node 2"))
-                    .padding(5)
-                    .into()
-            }).accepts_drops());
-
-        // Add children
-        tree_manager
-            .add_child("root1", tree_node("child1", || {
-                button("Child 1").on_press(Message::ButtonPressed("child1".to_string())).into()
-            }))
-            .add_child("root1", tree_node("child2", || {
-                text("Child 2").into()
-            }))
-            .add_child("root2", tree_node("child3", || {
-                button("Child 3").on_press(Message::ButtonPressed("child3".to_string())).into()
-            }).accepts_drops());
-
-        // Add grandchildren
-        tree_manager
-            .add_child("child3", tree_node("grandchild1", || {
-                text("Grandchild 1").into()
-            }));
-
-        container(
-            tree_manager
-                .view()
-                .on_toggle(Message::ToggleNode)
-                .on_select(Message::SelectNode)
-                .on_drop(Message::DropNode)
-                .spacing(5.0)
-                .indent(25.0)
-        )
-        .padding(20)
-        .into() */
-    } 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub enum Action {
