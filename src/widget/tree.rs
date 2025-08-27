@@ -5,9 +5,9 @@ use iced::{
         text::Renderer as _,
         widget::{self, tree::Tree},
         Clipboard, Layout, Shell, Widget,
-    }, border::Radius, keyboard, mouse, widget::text::Alignment, window::drag, Border, Color, Element, Event, Length, Pixels, Point, Rectangle, Size, Theme, Transformation, Vector
+    }, border::Radius, keyboard, mouse, widget::text::Alignment, Border, Color, Element, Event, Length, Pixels, Point, Rectangle, Size, Vector
 };
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 
 
 /// Creates a new [`TreeHandle`] with the given root branches.
@@ -48,7 +48,6 @@ const ARROW_W: f32 = 16.0;          // arrow font size
 const HANDLE_HOVER_W: f32 = 24.0;   // expanded handle width
 const HANDLE_STRIPE_W: f32 = 2.0;   // thin base stripe (matches selection strip)
 const CONTENT_GAP: f32 = 4.0;       // gap between arrow/handle block and content
-const DROP_INDICATOR_HEIGHT: f32 = 3.0; // Height of drop indicator line
 
 #[derive(Debug, Clone)]
 pub struct DropInfo{
@@ -104,7 +103,14 @@ struct State {
     hovered: Option<usize>,     // Mouse hover
     hovered_handle: Option<usize>, // Hovering over drag handle
     drag_state: Option<DragState>,
-    branch_order: Option<Vec<usize>>
+    branch_state: Option<Vec<BranchState>>,
+}
+
+#[derive(Clone, Debug)]
+struct BranchState {
+    id: usize,
+    parent_id: Option<usize>,
+    depth: u16,
 }
 
 impl<'a, Message, Theme, Renderer> 
@@ -282,55 +288,146 @@ where
         self
     }
 
-    /// Helper function to determine if a branch is visible based on parent expansion
-    fn is_branch_visible(&self, index: usize, metrics: &Metrics) -> bool {
-        if index >= self.branches.len() {
-            return false;
-        }
-
-        let branch = &self.branches[index];
-        
-        // Root level items are always visible
-        if branch.parent_id.is_none() {
-            return true;
-        }
-        
-        // Check if parent is expanded
-        if let Some(parent_id) = branch.parent_id {
-            // Find parent branch by ID
-            if let Some(parent_index) = self.branches.iter().position(|b| b.id == parent_id) {
-                // Parent must be visible and expanded
-                return metrics.visible_branches[parent_index] && metrics.expanded.contains(&parent_id);
-            }
-        }
-        
-        false
-    }
-
+    // Helper to get ordered indices from saved state
     fn get_ordered_indices(&self, state: &State) -> Vec<usize> {
-        if let Some(ref order) = state.branch_order {
+        if let Some(ref branch_states) = state.branch_state {
             let mut indices = Vec::new();
             
-            // First add branches in the stored order
-            for &id in order {
-                if let Some(idx) = self.branches.iter().position(|b| b.id == id) {
+            for bs in branch_states {
+                if let Some(idx) = self.branches.iter().position(|b| b.id == bs.id) {
                     indices.push(idx);
                 }
             }
             
-            // Then add any new branches not in the stored order
+            // Add any new branches not in saved state
             for (i, branch) in self.branches.iter().enumerate() {
-                if !order.contains(&branch.id) {
+                if !branch_states.iter().any(|bs| bs.id == branch.id) {
                     indices.push(i);
                 }
             }
             
             indices
         } else {
-            // No stored order yet - use default order
             (0..self.branches.len()).collect()
         }
     }
+    
+    // Helper to get effective branch info (with saved parent_id and depth)
+    fn get_branch_info(&self, index: usize, state: &State) -> (usize, Option<usize>, u16) {
+        let branch = &self.branches[index];
+        
+        if let Some(ref branch_states) = state.branch_state {
+            if let Some(bs) = branch_states.iter().find(|bs| bs.id == branch.id) {
+                return (branch.id, bs.parent_id, bs.depth);
+            }
+        }
+        
+        // Fall back to original values
+        (branch.id, branch.parent_id, branch.depth)
+    }
+    
+    // Determins if a branch is visible based on drag status [ If branch, or a parent is dragged, hide the branch. ]
+    fn is_branch_visible(&self, index: usize, metrics: &Metrics, state: &State) -> bool {
+        if index >= self.branches.len() {
+            return false;
+        }
+
+        let (id, parent_id, _) = self.get_branch_info(index, state);
+        
+        // Check if this branch itself is being dragged
+        if let Some(ref drag) = state.drag_state {
+            if drag.dragged_nodes.contains(&id) {
+                return false;
+            }
+            
+            // Check if this branch's parent is being dragged
+            if let Some(parent_id) = parent_id {
+                if drag.dragged_nodes.contains(&parent_id) {
+                    return false;
+                }
+                
+                // Also check if any ancestor is being dragged (for deeply nested items)
+                let mut current_parent = parent_id;
+                while let Some(parent_idx) = self.branches.iter().position(|b| b.id == current_parent) {
+                    if drag.dragged_nodes.contains(&current_parent) {
+                        return false;
+                    }
+                    let (_, next_parent, _) = self.get_branch_info(parent_idx, state);
+                    if let Some(np) = next_parent {
+                        current_parent = np;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Root level items are always visible (unless being dragged)
+        if parent_id.is_none() {
+            return true;
+        }
+        
+        // Check if parent is expanded
+        if let Some(parent_id) = parent_id {
+            // Find parent branch by ID
+            if let Some(parent_index) = self.branches.iter().position(|b| b.id == parent_id) {
+                // Parent must be visible and expanded
+                return self.is_branch_visible(parent_index, metrics, state) 
+                    && metrics.expanded.contains(&parent_id);
+            }
+        }
+        
+        false
+    }
+
+    /// Calculate branch positions without drop indicator spaces for stable hit testing
+    fn calculate_stable_positions(&self, metrics: &Metrics, state: &State, bounds: Rectangle) -> Vec<(usize, Rectangle, bool, bool)> {
+        let ordered_indices = self.get_ordered_indices(state);
+        let mut positions = Vec::new();
+        let mut y = bounds.y + self.padding_y;
+        
+        for &i in &ordered_indices {
+            if i >= self.branches.len() || 
+               i >= metrics.visible_branches.len() || 
+               !metrics.visible_branches[i] {
+                continue;
+            }
+            
+            let branch = &self.branches[i];
+            
+            // Skip dragged branches
+            if let Some(ref drag) = state.drag_state {
+                if drag.dragged_nodes.contains(&branch.id) {
+                    continue;
+                }
+            }
+            
+            let branch_height = if i < metrics.branch_heights.len() {
+                metrics.branch_heights[i]
+            } else {
+                LINE_HEIGHT
+            };
+            
+            let branch_bounds = Rectangle {
+                x: bounds.x,
+                y,
+                width: bounds.width,
+                height: branch_height,
+            };
+            
+            positions.push((
+                branch.id,
+                branch_bounds,
+                branch.has_children,
+                metrics.expanded.contains(&branch.id)
+            ));
+            
+            y += branch_height + self.spacing;
+        }
+        
+        positions
+    }
+
 }
 
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -390,13 +487,18 @@ where
         limits: &layout::Limits,
     ) -> layout::Node {
         let (metrics, state) = tree.state.downcast_mut::<(Metrics, State)>();
-
-        // If this is the first layout and we don't have an order yet, save the default order
-        if state.branch_order.is_none() {
-            state.branch_order = Some(self.branches.iter().map(|b| b.id).collect());
+        
+        // Initialize branch state if not present
+        if state.branch_state.is_none() {
+            state.branch_state = Some(
+                self.branches.iter().map(|b| BranchState {
+                    id: b.id,
+                    parent_id: b.parent_id,
+                    depth: b.depth,
+                }).collect()
+            );
         }
-
-        // Get the ordering to use
+        
         let ordered_indices = self.get_ordered_indices(state);
         let branch_count = self.branches.len();
         
@@ -404,10 +506,10 @@ where
         let available = limits.max();
         let tree_fluid = self.width.fluid();
         
-        // Update visibility based on expansion state
+        // Update visibility based on expansion state and saved parent relationships
         metrics.visible_branches = vec![false; branch_count];
         for i in 0..branch_count {
-            metrics.visible_branches[i] = self.is_branch_visible(i, metrics);
+            metrics.visible_branches[i] = self.is_branch_visible(i, metrics, state);
         }
         
         let mut cells = Vec::with_capacity(branch_count);
@@ -415,13 +517,6 @@ where
         
         metrics.branch_heights = vec![0.0; branch_count];
         metrics.branch_widths = vec![0.0; branch_count];
-
-        // Check if we need to add space for drop indicator
-        let drop_gap = if state.drag_state.is_some() {
-            DROP_INDICATOR_HEIGHT + self.spacing
-        } else {
-            0.0
-        };
         
         // FIRST PASS - Layout non-fluid visible branches
         let mut y = self.padding_y;
@@ -429,11 +524,12 @@ where
         let mut row_fill_factors = vec![0u16; branch_count];
         let mut total_fluid_height = 0.0;
         
+        // Process visible branches in order
         for &i in &ordered_indices {
             if i >= self.branches.len() {
                 continue;
             }
-            let branch = &self.branches[i];
+            
             let content = &self.branch_content[i];
             let child_state = &mut tree.children[i];
 
@@ -444,6 +540,9 @@ where
                 metrics.branch_widths[i] = 0.0;
             }
             
+            // Get effective depth from saved state
+            let (_, _, effective_depth) = self.get_branch_info(i, state);
+            
             let size = content.as_widget().size();
             let height_factor = size.height.fill_factor();
             
@@ -452,16 +551,9 @@ where
                 row_fill_factors[i] = height_factor;
                 continue;
             }
-
-            // Add drop gap if this is the drop target
-            if let Some(ref drag) = state.drag_state {
-                if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::Before {
-                    y += drop_gap;
-                }
-            }
             
-            // Calculate the x position - arrow, then handle, then content
-            let indent_x = self.padding_x + (branch.depth as f32 * self.indent);
+            // Calculate the x position using effective depth
+            let indent_x = self.padding_x + (effective_depth as f32 * self.indent);
             let content_x = indent_x + ARROW_W + HANDLE_HOVER_W + CONTENT_GAP;
             
             // Calculate available width for content
@@ -491,22 +583,11 @@ where
             
             // Store the layout node
             cells[i] = content_layout;
-            
-            y += metrics.branch_heights[i] + self.spacing;
-
-            // Add drop gap after if needed
-            if let Some(ref drag) = state.drag_state {
-                if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::After {
-                    y += drop_gap;
-                }
-            }
         }
         
         // Calculate total non-fluid height
         for (i, &height) in metrics.branch_heights.iter().enumerate() {
-
             if metrics.visible_branches[i] && row_fill_factors[i] == 0 {
-                // Don't count dragged items
                 if let Some(ref drag) = state.drag_state {
                     if !drag.dragged_nodes.contains(&self.branches[i].id) {
                         total_fluid_height += height;
@@ -521,7 +602,6 @@ where
         let total_fill_factor: u16 = row_fill_factors.iter()
             .enumerate()
             .filter(|(i, _)| {
-
                 if !metrics.visible_branches[*i] {
                     return false;
                 }
@@ -534,7 +614,7 @@ where
             })
             .map(|(_, &f)| f)
             .sum();
-        
+
         if total_fill_factor > 0 {
             let available_fluid_height = available.height 
                 - total_fluid_height 
@@ -544,17 +624,14 @@ where
             let height_unit = available_fluid_height / total_fill_factor as f32;
             
             for &i in &ordered_indices {
-                if i >= self.branches.len() {
+                if i >= self.branches.len() || !metrics.visible_branches[i] || row_fill_factors[i] == 0 {
                     continue;
                 }
+                
                 let branch = &self.branches[i];
                 let content = &self.branch_content[i];
                 let child_state = &mut tree.children[i];
-
-                if !metrics.visible_branches[i] || row_fill_factors[i] == 0 {
-                    continue;
-                }
-
+                
                 // Skip dragged items
                 if let Some(ref drag) = state.drag_state {
                     if drag.dragged_nodes.contains(&branch.id) {
@@ -564,8 +641,11 @@ where
                 
                 let size = content.as_widget().size();
                 
-                // Calculate position - consistent with first pass
-                let indent_x = self.padding_x + (branch.depth as f32 * self.indent);
+                // Get effective depth from saved state
+                let (_, _, effective_depth) = self.get_branch_info(i, state);
+                
+                // Calculate position using effective depth
+                let indent_x = self.padding_x + (effective_depth as f32 * self.indent);
                 let content_x = indent_x + ARROW_W + HANDLE_HOVER_W + CONTENT_GAP;
                 let available_content_width = (available.width - content_x - self.padding_x).max(0.0);
                 
@@ -607,17 +687,20 @@ where
         // THIRD PASS - Position all visible branches
         y = self.padding_y;
 
+        let drop_indicator_space = if state.drag_state.is_some() {
+            // Use a consistent space for drop indicators
+            LINE_HEIGHT + self.spacing
+        } else {
+            0.0
+        };
+        
         for &i in &ordered_indices {
-            if i >= self.branches.len() {
+            if i >= self.branches.len() || !metrics.visible_branches[i] {
                 continue;
             }
+            
             let branch = &self.branches[i];
-
-            // Skip invisible branches
-            if !metrics.visible_branches[i] {
-                continue;
-            }
-
+            
             // Skip dragged branches entirely
             if let Some(ref drag) = state.drag_state {
                 if drag.dragged_nodes.contains(&branch.id) {
@@ -626,17 +709,14 @@ where
                 
                 // Add space BEFORE this branch if it's the drop target
                 if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::Before {
-                    // Add visual space before this branch
-                    let first_dragged_idx = drag.dragged_nodes.first()
-                        .and_then(|id| self.branches.iter().position(|b| b.id == *id))
-                        .unwrap_or(0);
-                    if first_dragged_idx < metrics.branch_heights.len() {
-                        y += metrics.branch_heights[first_dragged_idx].max(LINE_HEIGHT) + self.spacing;
-                    }
+                    y += drop_indicator_space;
                 }
             }
             
-            let indent_x = self.padding_x + (branch.depth as f32 * self.indent);
+            // Get effective depth from saved state
+            let (_, _, effective_depth) = self.get_branch_info(i, state);
+            
+            let indent_x = self.padding_x + (effective_depth as f32 * self.indent);
             let content_x = indent_x + ARROW_W + HANDLE_HOVER_W + CONTENT_GAP;
             
             // Move the cell to its position
@@ -652,15 +732,39 @@ where
             
             y += metrics.branch_heights[i] + self.spacing;
 
+            // Handle "Into" drop position - add space for first child preview
+            if let Some(ref drag) = state.drag_state {
+                if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::Into {
+                    // If the branch is expanded and has children, we need to add space
+                    // for the preview that will appear as the first child
+                    if metrics.expanded.contains(&branch.id) {
+                        // Add space for the preview
+                        y += drop_indicator_space;
+                        
+                        // Push down all children of this branch
+                        // Find and adjust positions of immediate children
+                        for &child_i in &ordered_indices {
+                            if child_i >= self.branches.len() || child_i == i {
+                                continue;
+                            }
+                            
+                            let (child_id, child_parent_id, _) = self.get_branch_info(child_i, state);
+                            
+                            // If this is a child of the drop target, it needs to be pushed down
+                            if child_parent_id == Some(branch.id) && !drag.dragged_nodes.contains(&child_id) {
+                                // This child and all subsequent visible branches need adjustment
+                                // But we'll handle this in the next iteration naturally
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
             // Add space AFTER this branch if it's the drop target
             if let Some(ref drag) = state.drag_state {
                 if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::After {
-                    let first_dragged_idx = drag.dragged_nodes.first()
-                        .and_then(|id| self.branches.iter().position(|b| b.id == *id))
-                        .unwrap_or(0);
-                    if first_dragged_idx < metrics.branch_heights.len() {
-                        y += metrics.branch_heights[first_dragged_idx].max(LINE_HEIGHT) + self.spacing;
-                    }
+                    y += drop_indicator_space;
                 }
             }
         }
@@ -695,7 +799,11 @@ where
         
         // Update all visible children to ensure they get events
         for &i in &ordered_indices {
-            if i >= self.branch_content.len() || i >= metrics.visible_branches.len() {
+            if i >= self.branches.len() || i >= metrics.visible_branches.len() || !metrics.visible_branches[i] {
+                continue;
+            }
+            
+            if i >= metrics.branch_heights.len() {
                 continue;
             }
             
@@ -733,6 +841,9 @@ where
                         
                         let branch = &self.branches[i];
 
+                                    // Get effective depth from saved state
+                        let (_, _, effective_depth) = self.get_branch_info(i, state);
+
                         // Confirm bounds is possible, skip invisible bounds
                         if i >= metrics.visible_branches.len() || !metrics.visible_branches[i] {
                             continue;
@@ -745,7 +856,7 @@ where
                             }
                         }
                         
-                        let indent_x = bounds.x + self.padding_x + (branch.depth as f32 * self.indent);
+                        let indent_x = bounds.x + self.padding_x + (effective_depth as f32 * self.indent);
                         let branch_height = metrics.branch_heights[i];
                         
                         // Check if clicking on arrow (if has children)
@@ -844,7 +955,7 @@ where
                         if branch_bounds.contains(position) {
                             // Select the branch
                             let modifiers = keyboard::Modifiers::default(); // Need to implement
-                                
+
                             if modifiers.control() || modifiers.command() {
                                 // Toggle selection
                                 if state.selected.contains(&branch.id) {
@@ -857,9 +968,10 @@ where
                                 state.selected.clear();
                                 state.selected.insert(branch.id);
                             }
-                                
+
                             state.focused = Some(branch.id);
                             shell.invalidate_widgets();
+                            shell.request_redraw();
                             return;
                         }
                         
@@ -871,144 +983,82 @@ where
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => { }
         
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                // Update hover and drag states
-                if let Some(position) = cursor.position() {
-                    let bounds = layout.bounds();
-                    let mut y = bounds.y + self.padding_y;
-                    let mut new_hovered = None;
-                    let mut new_hovered_handle = None;
-                    
-                    for &i in &ordered_indices {
-                        if i >= self.branches.len() || i >= metrics.visible_branches.len() {
-                            continue;
-                        }
+                // Only handle hover states when NOT dragging
+                if state.drag_state.is_none() {
+                    if let Some(position) = cursor.position() {
+                        let bounds = layout.bounds();
                         
-                        let branch = &self.branches[i];
-
-                        if !metrics.visible_branches[i] {
-                            continue;
-                        }
+                        // Use stable positions for hit testing
+                        let stable_positions = self.calculate_stable_positions(metrics, state, bounds);
                         
-                        // Skip dragged items when calculating drop target
-                        if let Some(ref mut drag) = state.drag_state {
-                            println!("current drag position before: {}", drag.current_position);
-                            drag.current_position = position;
-                            if drag.dragged_nodes.contains(&branch.id) {
-                                continue;
-                            }
-                            println!("current drag position after: {}", drag.current_position);
-                        }
+                        let mut new_hovered = None;
+                        let mut new_hovered_handle = None;
                         
-                        let indent_x = bounds.x + self.padding_x + (branch.depth as f32 * self.indent);
-                        let branch_height = metrics.branch_heights[i];
-                        
-                        // Check if hovering over branch
-                        let branch_bounds = Rectangle {
-                            x: bounds.x,
-                            y,
-                            width: bounds.width,
-                            height: branch_height,
-                        };
-                        
-                        if branch_bounds.contains(position) {
-                            state.hovered_handle = Some(branch.id);
-                            new_hovered = Some(branch.id);
-                            
-                            // Check if hovering over handle area
-                            let handle_x = indent_x + ARROW_W;
-                            let handle_bounds = Rectangle {
-                                x: handle_x,
-                                y,
-                                width: HANDLE_HOVER_W,
-                                height: branch_height,
-                            };
-                            
-                            if handle_bounds.contains(position) {
-                                new_hovered_handle = Some(branch.id);
-                            }
-                            
-                            // Calculate drop position if dragging
-                            if state.drag_state.is_some() {
-                                let new_drop_target = Some(branch.id);
-                                let new_drop_position = self.calculate_drop_position(
-                                    position.y,
-                                    branch_bounds,
-                                    branch.has_children,
-                                    metrics.expanded.contains(&branch.id),
-                                );
-
-                                println!("new_drop_target: {:?}", new_drop_target);
-                                println!("new_drop_position: {:?}", new_drop_position);
-
-                                // Update drag state
-                                if let Some(ref mut drag) = state.drag_state {
-                                    drag.current_position = position;
-                                    if new_drop_target != drag.drop_target || new_drop_position != drag.drop_position {
-                                        drag.drop_target = new_drop_target;
-                                        drag.drop_position = new_drop_position;
-                                        shell.invalidate_layout();
+                        for (branch_id, branch_bounds, _, _) in stable_positions {
+                            if branch_bounds.contains(position) {
+                                new_hovered = Some(branch_id);
+                                
+                                // Find the branch to get its depth
+                                if let Some(branch_idx) = self.branches.iter().position(|b| b.id == branch_id) {
+                                    let (_, _, effective_depth) = self.get_branch_info(branch_idx, state);
+                                    let indent_x = bounds.x + self.padding_x + (effective_depth as f32 * self.indent);
+                                    
+                                    // Check if hovering over handle area
+                                    let handle_x = indent_x + ARROW_W;
+                                    let handle_bounds = Rectangle {
+                                        x: handle_x,
+                                        y: branch_bounds.y,
+                                        width: HANDLE_HOVER_W,
+                                        height: branch_bounds.height,
+                                    };
+                                    
+                                    if handle_bounds.contains(position) {
+                                        new_hovered_handle = Some(branch_id);
                                     }
                                 }
-
+                                break;
                             }
                         }
                         
-                        y += branch_height + self.spacing;
-                    }
-
-
-                    
-
-                    
-                    if new_hovered != state.hovered || new_hovered_handle != state.hovered_handle {
-                        let old_hovered_handle = state.hovered_handle;
-                        state.hovered = new_hovered;
-                        state.hovered_handle = new_hovered_handle;
-                        
-                        // If handle hover state changed, we need to relayout
-                        if old_hovered_handle != new_hovered_handle && state.drag_state.is_none() {
-                            shell.invalidate_layout();
+                        if new_hovered != state.hovered || new_hovered_handle != state.hovered_handle {
+                            state.hovered = new_hovered;
+                            state.hovered_handle = new_hovered_handle;
+                            shell.request_redraw();
                         }
                     }
-
-                    shell.invalidate_widgets();
                 }
             }
+
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 // Handle keyboard navigation
                 if let Some(focused) = state.focused {
+
+                    let ordered_indices = self.get_ordered_indices(state);
+                    
+                    // Filter to only visible branches in their display order
+                    let visible_ordered: Vec<usize> = ordered_indices.iter()
+                        .filter(|&&i| i < metrics.visible_branches.len() && metrics.visible_branches[i])
+                        .map(|&i| self.branches[i].id)
+                        .collect();
+
                     match key {
                         keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
                             // Move focus up
-                            let visible_indices: Vec<_> = metrics.visible_branches.iter()
-                                .enumerate()
-                                .filter(|(_, visible)| **visible)
-                                .map(|(i, _)| i)
-                                .collect();
-                            
-                            if let Some(current_pos) = visible_indices.iter()
-                                .position(|&i| self.branches[i].id == focused) 
-                            {
+                            if let Some(current_pos) = visible_ordered.iter().position(|&id| id == focused) {
                                 if current_pos > 0 {
-                                    state.focused = Some(self.branches[visible_indices[current_pos - 1]].id);
+                                    state.focused = Some(visible_ordered[current_pos - 1]);
                                     shell.invalidate_widgets();
+                                    shell.request_redraw();
                                 }
                             }
                         }
                         keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
                             // Move focus down
-                            let visible_indices: Vec<_> = metrics.visible_branches.iter()
-                                .enumerate()
-                                .filter(|(_, visible)| **visible)
-                                .map(|(i, _)| i)
-                                .collect();
-                            
-                            if let Some(current_pos) = visible_indices.iter()
-                                .position(|&i| self.branches[i].id == focused) 
-                            {
-                                if current_pos < visible_indices.len() - 1 {
-                                    state.focused = Some(self.branches[visible_indices[current_pos + 1]].id);
+                            if let Some(current_pos) = visible_ordered.iter().position(|&id| id == focused) {
+                                if current_pos < visible_ordered.len() - 1 {
+                                    state.focused = Some(visible_ordered[current_pos + 1]);
                                     shell.invalidate_widgets();
+                                    shell.request_redraw();
                                 }
                             }
                         }
@@ -1018,6 +1068,7 @@ where
                                 if branch.has_children && metrics.expanded.contains(&focused) {
                                     metrics.expanded.remove(&focused);
                                     shell.invalidate_layout();
+                                    shell.request_redraw();
                                 }
                             }
                         }
@@ -1027,6 +1078,7 @@ where
                                 if branch.has_children && !metrics.expanded.contains(&focused) {
                                     metrics.expanded.insert(focused);
                                     shell.invalidate_layout();
+                                    shell.request_redraw();
                                 }
                             }
                         }
@@ -1043,6 +1095,7 @@ where
                                 state.selected.insert(focused);
                             }
                             shell.invalidate_widgets();
+                            shell.request_redraw();
                         }
                         _ => {}
                     }
@@ -1068,61 +1121,154 @@ where
         let tree_style = theme.style(&self.class);
         
         let mut y = bounds.y + self.padding_y;
+
+        // Helper to draw drop preview
+        let draw_drop_preview = |renderer: &mut Renderer, y: f32, depth: u16, width: f32| {
+            let preview_indent = bounds.x + self.padding_x + (depth as f32 * self.indent);
+            let preview_height = LINE_HEIGHT;
+            
+            // Draw preview background
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle {
+                        x: preview_indent,
+                        y,
+                        width: width - preview_indent + bounds.x,
+                        height: preview_height,
+                    },
+                    border: Border {
+                        color: tree_style.accept_drop_indicator_color,
+                        width: 2.0,
+                        radius: Radius::from(4.0),
+                    },
+                    ..Default::default()
+                },
+                Color::from_rgba(
+                    tree_style.accept_drop_indicator_color.r,
+                    tree_style.accept_drop_indicator_color.g,
+                    tree_style.accept_drop_indicator_color.b,
+                    0.1  // Semi-transparent background
+                ),
+            );
+            
+            // Draw "ghost" handle and content area
+            let handle_x = preview_indent + ARROW_W;
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle {
+                        x: handle_x,
+                        y: y + 2.0,
+                        width: HANDLE_STRIPE_W,
+                        height: preview_height - 4.0,
+                    },
+                    border: Border::default(),
+                    ..Default::default()
+                },
+                Color::from_rgba(
+                    tree_style.line_color.r,
+                    tree_style.line_color.g,
+                    tree_style.line_color.b,
+                    0.3
+                ),
+            );
+        };
+
+        // Track if we need to adjust for an "Into" preview
+        let mut pending_into_adjustment = false;
         
         for &i in &ordered_indices {
-            if i >= self.branches.len() {
+            if i >= self.branches.len() || 
+            i >= metrics.visible_branches.len() || 
+            !metrics.visible_branches[i] ||
+            i >= metrics.branch_heights.len() {
                 continue;
             }
             
             let branch = &self.branches[i];
-
-            // Add bounds check
-            if i >= metrics.visible_branches.len() || !metrics.visible_branches[i] {
-                continue;
-            }
             
-            // Ensure we have valid metrics
-            if i >= metrics.branch_heights.len() {
-                continue;
-            }
+            // Get effective info from saved state
+            let (id, parent_id, effective_depth) = self.get_branch_info(i, state);
 
-            // Skip dragged branches (they'll be drawn in overlay)
+            // Skip dragged branches
             if let Some(ref drag) = state.drag_state {
-                if drag.dragged_nodes.contains(&branch.id) {
+                if drag.dragged_nodes.contains(&id) {
                     continue;
                 }
                 
-                // Draw drop indicator before
-                if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::Before {
-                    renderer.fill_quad(
-                        renderer::Quad {
-                            bounds: Rectangle {
-                                x: bounds.x + self.padding_x,
-                                y: y - DROP_INDICATOR_HEIGHT / 2.0 - self.spacing / 2.0,
-                                width: bounds.width - self.padding_x * 2.0,
-                                height: DROP_INDICATOR_HEIGHT,
-                            },
-                            border: Border::default(),
-                            ..Default::default()
-                        },
-                        tree_style.accept_drop_indicator_color,
-                    );
-                    y += DROP_INDICATOR_HEIGHT + self.spacing;
+                // Draw drop preview BEFORE this branch
+                if drag.drop_target == Some(id) && drag.drop_position == DropPosition::Before {
+                    let preview_depth = effective_depth;
+                    draw_drop_preview(renderer, y, preview_depth, bounds.width);
+                    y += LINE_HEIGHT + self.spacing;
                 }
             }
+
+            // Check if this branch's parent has an "Into" drop and this is its first child
+            if pending_into_adjustment {
+                // This is the first child after an "Into" drop preview
+                y += LINE_HEIGHT + self.spacing;
+                pending_into_adjustment = false;
+            }
             
-            let indent_x = bounds.x + self.padding_x + (branch.depth as f32 * self.indent);
+            let indent_x = bounds.x + self.padding_x + (effective_depth as f32 * self.indent);
             let branch_height = metrics.branch_heights[i];
-            
+
+            // Store the actual Y position for this branch
+            let branch_y = y;
+
+            // Draw "Into" drop indicator as a highlighted border
+            if let Some(ref drag) = state.drag_state {
+                if drag.drop_target == Some(id) && drag.drop_position == DropPosition::Into {
+                    // Only show preview of where it will appear as first child
+                    if metrics.expanded.contains(&id) {
+                        pending_into_adjustment = true;
+                    } else {
+                        // If collapsed, show a subtle "into" indicator on the right side
+                        let indicator_width = 30.0;
+                        let indicator_x = bounds.x + bounds.width - indicator_width - 10.0;
+                        
+                        renderer.fill_quad(
+                            renderer::Quad {
+                                bounds: Rectangle {
+                                    x: indicator_x,
+                                    y: y + branch_height / 2.0 - 1.5,
+                                    width: indicator_width,
+                                    height: 3.0,
+                                },
+                                border: Border::default(),
+                                ..Default::default()
+                            },
+                            tree_style.accept_drop_indicator_color,
+                        );
+                        
+                        // Draw a small arrow pointing into
+                        renderer.fill_text(
+                            iced::advanced::Text {
+                                content: "→".into(),
+                                bounds: Size::new(20.0, branch_height),
+                                size: Pixels(16.0),
+                                font: iced::Font::default(),
+                                align_x: Alignment::Center,
+                                align_y: iced::alignment::Vertical::Center,
+                                line_height: iced::advanced::text::LineHeight::default(),
+                                shaping: iced::advanced::text::Shaping::Advanced,
+                                wrapping: iced::advanced::text::Wrapping::default(),
+                            },
+                            Point::new(indicator_x - 20.0, y + (branch_height / 2.0)),
+                            tree_style.accept_drop_indicator_color,
+                            *viewport,
+                        );
+                    }
+                }
+            }
+
             // Draw selection background
-            if state.selected.contains(&branch.id) {
+            if state.selected.contains(&id) {
                 renderer.fill_quad(
                     renderer::Quad {
                         bounds: Rectangle {
-                            //x: indent_x, // Testing if I like the full row or using the indent
                             x: bounds.x,
                             y,
-                            //width: bounds.width - indent_x + bounds.x, // Testing if I like the full row or using the indent
                             width: bounds.width,
                             height: branch_height,
                         },
@@ -1132,68 +1278,20 @@ where
                     tree_style.selection_background,
                 );
             }
-
-            // Draw drop target highlight for "Into" position
-            if let Some(ref drag) = state.drag_state {
-                if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::Into {
-                    renderer.fill_quad(
-                        renderer::Quad {
-                            bounds: Rectangle {
-                                x: indent_x,
-                                y,
-                                width: bounds.width - indent_x + bounds.x,
-                                height: branch_height,
-                            },
-                            border: Border {
-                                color: tree_style.accept_drop_indicator_color,
-                                width: 2.0,
-                                radius: Radius::from(2.0),
-                            },
-                            ..Default::default()
-                        },
-                        iced::Background::Color(Color::TRANSPARENT),
-                    );
-                }
-            }
             
-            // Draw focus border
-            if state.focused == Some(branch.id) || state.hovered == Some(branch.id) {
+            // Draw hover/focus border
+            if state.focused == Some(id) || state.hovered == Some(id) {
                 renderer.fill_quad(
                     renderer::Quad {
                         bounds: Rectangle {
-                            //x: indent_x, // Testing if I like the full row or using the indent
                             x: bounds.x,
                             y,
-                            //width: bounds.width - indent_x + bounds.x, // Testing if I like the full row or using the indent
                             width: bounds.width,
                             height: branch_height,
                         },
                         border: Border {
                             color: tree_style.focus_border,
-                            width: 2.0,
-                            radius: Radius::from(2.0),
-                        },
-                        ..Default::default()
-                    },
-                    iced::Background::Color(Color::TRANSPARENT),
-                );
-            }
-
-            // Draw selected border
-            if state.selected.contains(&branch.id) {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: Rectangle {
-                            //x: indent_x, // Testing if I like the full row or using the indent
-                            x: bounds.x,
-                            y,
-                            //width: bounds.width - indent_x + bounds.x, // Testing if I like the full row or using the indent
-                            width: bounds.width,
-                            height: branch_height,
-                        },
-                        border: Border {
-                            color: tree_style.selection_border,
-                            width: 2.0,
+                            width: 1.0,
                             radius: Radius::from(2.0),
                         },
                         ..Default::default()
@@ -1204,13 +1302,9 @@ where
             
             // Draw expand/collapse arrow if branch has children
             if branch.has_children {
-                let arrow_y = y + (branch_height / 2.0);
-                
-                let arrow = if metrics.expanded.contains(&branch.id) {
-                    //"▼"
+                let arrow = if metrics.expanded.contains(&id) {
                     "🠻"
                 } else {
-                    //"▶"
                     "🠺"
                 };
                 
@@ -1226,7 +1320,7 @@ where
                         shaping: iced::advanced::text::Shaping::Advanced,
                         wrapping: iced::advanced::text::Wrapping::default(),
                     },
-                    Point::new(indent_x + ARROW_X_PAD, arrow_y),
+                    Point::new(indent_x + ARROW_X_PAD, y + (branch_height / 2.0)),
                     tree_style.arrow_color,
                     *viewport,
                 );
@@ -1234,13 +1328,9 @@ where
             
             // Draw handle/drag area (to the right of arrow)
             let handle_x = indent_x + ARROW_W;
-            let handle_width = if state.hovered == Some(branch.id) {
-                HANDLE_HOVER_W  // Full width when hovered
-            } else {
-                HANDLE_STRIPE_W  // Thin stripe when not hovered
-            };
+            let handle_width = HANDLE_STRIPE_W;
             
-            let handle_color = if state.hovered_handle == Some(branch.id) {
+            let handle_color = if state.hovered_handle == Some(id) {
                 // Lighter color when hovered
                 Color::from_rgba(
                     tree_style.line_color.r,
@@ -1257,7 +1347,7 @@ where
                 renderer::Quad {
                     bounds: Rectangle {
                         x: handle_x,
-                        y: y + 2.0,
+                        y: branch_y + 2.0,
                         width: handle_width,
                         height: branch_height - 4.0,
                     },
@@ -1268,29 +1358,62 @@ where
             );
             
             y += branch_height + self.spacing;
-        }
-        
-        // Draw branch content
-        for (i, ((branch, child_state), child_layout)) in self
-            .branch_content
-            .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-            .enumerate()
-        {
 
-            if metrics.visible_branches[i] {
-                // Skip dragged items
-                if let Some(ref drag) = state.drag_state {
-                    if !drag.dragged_nodes.contains(&self.branches[i].id) {
+            // Draw the "Into" preview if this branch is expanded
+            if let Some(ref drag) = state.drag_state {
+                if drag.drop_target == Some(id) && 
+                drag.drop_position == DropPosition::Into && 
+                metrics.expanded.contains(&id) {
+                    // Draw preview for first child position
+                    let child_preview_y = branch_y + branch_height + self.spacing;
+                    let child_depth = effective_depth + 1;
+                    draw_drop_preview(renderer, child_preview_y, child_depth, bounds.width);
+                }
+            }
+
+            // Draw drop preview AFTER this branch (and all its children)
+            if let Some(ref drag) = state.drag_state {
+                if drag.drop_target == Some(id) && drag.drop_position == DropPosition::After {
+                    // Check if there are any more visible items after this one
+                    let is_last_visible_item = !ordered_indices.iter()
+                        .skip_while(|&&j| j != i)
+                        .skip(1)
+                        .any(|&j| j < self.branches.len() && metrics.visible_branches[j]);
+                    
+                    // Draw at appropriate depth
+                    let preview_depth = if parent_id.is_some() && is_last_visible_item {
+                        0  // Root level only if this is a child AND the very last item
+                    } else {
+                        effective_depth  // Same level as target
+                    };
+                    
+                    draw_drop_preview(renderer, y, preview_depth, bounds.width);
+                    y += LINE_HEIGHT + self.spacing;
+                }
+            }
+        
+            // Draw branch content
+            for (i, ((branch, child_state), child_layout)) in self
+                .branch_content
+                .iter()
+                .zip(&tree.children)
+                .zip(layout.children())
+                .enumerate()
+            {
+
+                if i < metrics.visible_branches.len() && metrics.visible_branches[i] {
+                    // Skip dragged items
+                    if let Some(ref drag) = state.drag_state {
+                        if !drag.dragged_nodes.contains(&self.branches[i].id) {
+                            branch.as_widget().draw(
+                                child_state, renderer, theme, style, child_layout, cursor, viewport,
+                            );
+                        }
+                    } else {
                         branch.as_widget().draw(
                             child_state, renderer, theme, style, child_layout, cursor, viewport,
                         );
                     }
-                } else {
-                    branch.as_widget().draw(
-                        child_state, renderer, theme, style, child_layout, cursor, viewport,
-                    );
                 }
             }
         }
@@ -1313,17 +1436,25 @@ where
             let mut y = bounds.y + self.padding_y;
             
             for &i in &ordered_indices {
-                if i >= self.branches.len() || i >= metrics.branch_heights.len() {
+                if i >= self.branches.len() || i >= metrics.visible_branches.len() || !metrics.visible_branches[i] {
                     continue;
                 }
                 
+                if i >= metrics.branch_heights.len() {
+                    continue;
+                }
+
+                // Get effective info from saved state
+                let (_id, _parent_id, effective_depth) = self.get_branch_info(i, state);
+                
                 let branch = &self.branches[i];
+
                 // Skip invisible branches
                 if metrics.visible_branches.get(i).copied().unwrap_or(false) == false {
                     continue;
                 }
                 
-                let indent_x = bounds.x + self.padding_x + (branch.depth as f32 * self.indent);
+                let indent_x = bounds.x + self.padding_x + (effective_depth as f32 * self.indent);
                 let branch_height = metrics.branch_heights[i];
                 
                 // Check arrow
@@ -1437,31 +1568,8 @@ where
                     })));
                 }
             }
-
-//            println!("[overlay()] returning Some? {}", !dragged_indices.is_empty());
-/*             if !dragged_indices.is_empty() {
-                
-                return Some(iced::advanced::overlay::Element::new(Box::new(DragOverlay {
-                    tree_handle: self,
-                    state: tree,
-                    layout,
-                    viewport: *viewport,
-                    dragged_indices,
-                    translation,               // keep the inherited translation
-                })));
-            } */
         }
-        
         None
-        // Otherwise, check children for overlays
-/*         iced::advanced::overlay::from_children(
-            &mut self.branch_content,
-            tree,
-            layout,
-            renderer,
-            viewport,
-            translation,
-        ) */
     }
 
 }
@@ -1511,9 +1619,17 @@ where
             
             for &i in &self.dragged_indices {
                 if i < metrics.branch_widths.len() {
-                    // Account for indentation + arrow + handle + content + padding
-                    let branch = &self.tree_handle.branches[i];
-                    let indent_x = branch.depth as f32 * self.tree_handle.indent;
+                    // Get effective depth from saved state
+                    let effective_depth = if let Some(ref branch_states) = state.branch_state {
+                        branch_states.iter()
+                            .find(|bs| self.tree_handle.branches.get(i).map(|b| b.id == bs.id).unwrap_or(false))
+                            .map(|bs| bs.depth)
+                            .unwrap_or(self.tree_handle.branches[i].depth)
+                    } else {
+                        self.tree_handle.branches[i].depth
+                    };
+                    
+                    let indent_x = effective_depth as f32 * self.tree_handle.indent;
                     let content_width = indent_x + ARROW_W + HANDLE_HOVER_W + CONTENT_GAP + metrics.branch_widths[i] + self.tree_handle.padding_x;
                     max_width = max_width.max(content_width);
                     
@@ -1527,7 +1643,7 @@ where
             (max_width.max(200.0), total_height.max(LINE_HEIGHT))
         } else {
             (300.0, LINE_HEIGHT)
-        };        
+        };      
 
         layout::Node::new(Size::new(width, height))
             .move_to(position)
@@ -1544,41 +1660,23 @@ where
         shell: &mut Shell<'_, Message>,
     ) {
         match event {
+
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(position) = cursor.position() {
                     let (metrics, state) = self.state.state.downcast_mut::<(Metrics, State)>();
+                    let ordered_indices = self.tree_handle.get_ordered_indices(state);
                     
-                    if let Some(ref mut drag) = state.drag_state {
-                        // Update the current position
-                        drag.current_position = position;
-                        
-                        // Find drop target in real-time
-                        let tree_bounds = self.tree_layout.bounds();
-                        let mut y = tree_bounds.y + self.tree_handle.padding_y;
-                        let mut new_drop_target = None;
-                        let mut new_drop_position = DropPosition::Before;
-                        
-                        for (i, branch) in self.tree_handle.branches.iter().enumerate() {
-                            // Skip invisible branches
-                            if i >= metrics.visible_branches.len() || !metrics.visible_branches[i] {
-                                continue;
+                    // Pre-collect branch info WITHOUT accounting for drop spaces
+                    let branch_infos: Vec<_> = ordered_indices.iter()
+                        .filter_map(|&i| {
+                            if i >= self.tree_handle.branches.len() || 
+                            i >= metrics.visible_branches.len() || 
+                            !metrics.visible_branches[i] {
+                                return None;
                             }
                             
-                            // Skip dragged branches
-                            if drag.dragged_nodes.contains(&branch.id) {
-                                continue;
-                            }
-                            
-                            // Account for visual space if this is the current drop target
-                            if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::Before {
-                                // Add the space that would be created
-                                let first_dragged_idx = drag.dragged_nodes.first()
-                                    .and_then(|id| self.tree_handle.branches.iter().position(|b| b.id == *id))
-                                    .unwrap_or(0);
-                                if first_dragged_idx < metrics.branch_heights.len() {
-                                    y += metrics.branch_heights[first_dragged_idx].max(LINE_HEIGHT) + self.tree_handle.spacing;
-                                }
-                            }
+                            let branch = &self.tree_handle.branches[i];
+                            let (id, parent_id, depth) = self.tree_handle.get_branch_info(i, state);
                             
                             let branch_height = if i < metrics.branch_heights.len() {
                                 metrics.branch_heights[i]
@@ -1586,60 +1684,116 @@ where
                                 LINE_HEIGHT
                             };
                             
-                            // Create full row bounds
+                            Some((
+                                id,
+                                parent_id,
+                                depth,
+                                branch_height,
+                                branch.has_children,
+                                metrics.expanded.contains(&id)
+                            ))
+                        })
+                        .collect();
+                    
+                    if let Some(ref mut drag) = state.drag_state {
+                        // Update position
+                        drag.current_position = position;
+                        
+                        let tree_bounds = self.tree_layout.bounds();
+                        let mut new_drop_target = drag.drop_target; // Keep current by default
+                        let mut new_drop_position = drag.drop_position.clone();
+                        
+                        // Build STABLE positions (no drop indicator spaces)
+                        let mut branch_positions = Vec::new();
+                        let mut y = tree_bounds.y + self.tree_handle.padding_y;
+                        
+                        for (id, parent_id, depth, branch_height, has_children, is_expanded) in &branch_infos {
+                            // Skip dragged branches
+                            if drag.dragged_nodes.contains(id) {
+                                continue;
+                            }
+                            
+                            // DON'T add drop indicator spaces here - keep positions stable
+                            branch_positions.push((
+                                *id,
+                                *parent_id,
+                                *depth,
+                                y,
+                                *branch_height,
+                                *has_children,
+                                *is_expanded
+                            ));
+                            
+                            y += branch_height + self.tree_handle.spacing;
+                        }
+                        
+                        // Find target using stable positions
+                        let mut found_target = false;
+                        for (id, parent_id, depth, branch_y, height, has_children, is_expanded) in &branch_positions {
                             let row_bounds = Rectangle {
                                 x: tree_bounds.x,
-                                y,
+                                y: *branch_y,
                                 width: tree_bounds.width,
-                                height: branch_height,
+                                height: *height,
                             };
                             
-                            if row_bounds.contains(position) {
-                                new_drop_target = Some(branch.id);
+                            // Expand hit zone slightly to prevent loss during small movements
+                            let expanded_bounds = Rectangle {
+                                x: row_bounds.x,
+                                y: row_bounds.y - 2.0,  // Add a small buffer
+                                width: row_bounds.width,
+                                height: row_bounds.height + 4.0,
+                            };
+                            
+                            if expanded_bounds.contains(position) {
+                                found_target = true;
+                                new_drop_target = Some(*id);
                                 
-                                // Calculate drop position
                                 let relative_y = position.y - row_bounds.y;
-                                let third_height = row_bounds.height / 3.0;
+                                let height_ratio = relative_y / row_bounds.height;
                                 
-                                new_drop_position = if relative_y < third_height {
-                                    DropPosition::Before
-                                } else if relative_y > row_bounds.height - third_height {
-                                    DropPosition::After
-                                } else if branch.has_children && metrics.expanded.contains(&branch.id) {
-                                    DropPosition::Into
+                                // Simplified logic: No "After" for branches with children
+                                if *has_children {
+                                    // Only Before or Into for parent nodes
+                                    new_drop_position = if height_ratio < 0.3 {
+                                        DropPosition::Before
+                                    } else {
+                                        DropPosition::Into
+                                    };
                                 } else {
-                                    if relative_y < row_bounds.height / 2.0 {
+                                    // Before or After for leaf nodes
+                                    new_drop_position = if height_ratio < 0.5 {
                                         DropPosition::Before
                                     } else {
                                         DropPosition::After
-                                    }
-                                };
+                                    };
+                                }
                                 break;
                             }
+                        }
+
+                        // Handle end-of-tree drop
+                        if !found_target && position.y > tree_bounds.y && !branch_positions.is_empty() {
+                            let (last_id, last_parent_id, _, last_y, last_height, _, _) = 
+                                branch_positions.last().unwrap();
                             
-                            y += branch_height + self.tree_handle.spacing;
-                            
-                            // Account for visual space after if this is the current drop target
-                            if drag.drop_target == Some(branch.id) && drag.drop_position == DropPosition::After {
-                                let first_dragged_idx = drag.dragged_nodes.first()
-                                    .and_then(|id| self.tree_handle.branches.iter().position(|b| b.id == *id))
-                                    .unwrap_or(0);
-                                if first_dragged_idx < metrics.branch_heights.len() {
-                                    y += metrics.branch_heights[first_dragged_idx].max(LINE_HEIGHT) + self.tree_handle.spacing;
-                                }
+                            if position.y > last_y + last_height {
+                                // Just use the actual last item as the target
+                                new_drop_target = Some(*last_id);
+                                new_drop_position = DropPosition::After;
                             }
                         }
                         
-                        // Update drop target if changed
-                        if new_drop_target != drag.drop_target || new_drop_position != drag.drop_position {
+                        // Only update if actually changed
+                        let changed = new_drop_target != drag.drop_target || 
+                                    new_drop_position != drag.drop_position;
+                        
+                        if changed {
                             drag.drop_target = new_drop_target;
                             drag.drop_position = new_drop_position;
-                            
-                            // Force layout recalculation to show visual space
                             shell.invalidate_layout();
                         }
                         
-                        // Always request redraw for smooth dragging
                         shell.request_redraw();
                     }
                 }
@@ -1734,14 +1888,23 @@ where
                         LINE_HEIGHT
                     };
 
-                    let branch_depth = self.tree_handle.branches[i].depth;
+                    // Get effective depth from saved state
+                    let effective_depth = if let Some(ref branch_states) = state.branch_state {
+                        branch_states.iter()
+                            .find(|bs| self.tree_handle.branches.get(i).map(|b| b.id == bs.id).unwrap_or(false))
+                            .map(|bs| bs.depth)
+                            .unwrap_or_else(|| self.tree_handle.branches.get(i).map(|b| b.depth).unwrap_or(0))
+                    } else {
+                        self.tree_handle.branches.get(i).map(|b| b.depth).unwrap_or(0)
+                    };
 
                     let branch_bounds = Rectangle {
-                        x: drag_bounds.x - ( HANDLE_HOVER_W + HANDLE_STRIPE_W + self.tree_handle.spacing + CONTENT_GAP + ARROW_W + (branch_depth as f32 * self.tree_handle.indent) ),
+                        x: drag_bounds.x - (HANDLE_HOVER_W + HANDLE_STRIPE_W + self.tree_handle.spacing + CONTENT_GAP + ARROW_W + (effective_depth as f32 * self.tree_handle.indent)),
                         y: drag_bounds.y + y_offset,
                         width: state.drag_state.as_ref().unwrap().drag_start_bounds.width,
                         height: branch_height,
                     };
+                    println!("branch_bounds: {:?}", branch_bounds);
 
                     // Draw selection background and border with transparency
                     renderer.fill_quad(
@@ -1793,6 +1956,7 @@ where
                     if let Some(branch_content) = self.tree_handle.branch_content.get(i) {
                         let branch_tree = &self.state.children[i];
                         
+                        println!("self.layout: {:?}", self.layout);
                         branch_content.as_widget().draw(
                             branch_tree,
                             renderer,
@@ -1828,186 +1992,199 @@ where
     Theme: Catalog,
     Renderer: iced::advanced::text::Renderer<Font = iced::Font>,
 {
+
     fn reorder_with_tree(
         &mut self,
         dragged_ids: &[usize],
         target_id: usize,
         drop_position: &DropPosition,
     ) {
-        // Collect all items to move (dragged + their descendants)
+        // Get current branch states
+        let (_, state) = self.state.state.downcast_ref::<(Metrics, State)>();
+        let current_states: Vec<BranchState> = if let Some(ref branch_states) = state.branch_state {
+            branch_states.clone()
+        } else {
+            self.tree_handle.branches.iter().map(|b| BranchState {
+                id: b.id,
+                parent_id: b.parent_id,
+                depth: b.depth,
+            }).collect()
+        };
+        
+        // Create a map for quick lookup
+        let state_map: HashMap<usize, BranchState> = current_states.iter()
+            .map(|bs| (bs.id, bs.clone()))
+            .collect();
+        
+        // Collect all items to move
         let mut items_to_move = HashSet::new();
         for &id in dragged_ids {
             self.collect_branch_and_descendants(id, &mut items_to_move);
         }
         
-        println!("Dragged IDs: {:?}", dragged_ids);
-        println!("Items to move (including descendants): {:?}", items_to_move);
+        // Get target info
+        let target_state = state_map.get(&target_id)
+            .cloned()
+            .unwrap_or_else(|| BranchState {
+                id: target_id,
+                parent_id: None,
+                depth: 0,
+            });
         
-        // Get target info before any modifications
-        let target_info = self.tree_handle.branches
-            .iter()
-            .find(|b| b.id == target_id)
-            .map(|b| (b.parent_id, b.depth))
-            .unwrap_or((None, 0));
+        // Separate moved and non-moved items
+        let mut new_states: Vec<BranchState> = Vec::new();
+        let mut removed_states: Vec<BranchState> = Vec::new();
         
-        // Collect items to remove, preserving their relative order
-        let mut removed_items = Vec::new();
-        let mut removed_indices = Vec::new();
-        
-        for (i, branch) in self.tree_handle.branches.iter().enumerate() {
-            if items_to_move.contains(&branch.id) {
-                removed_indices.push(i);
+        for bs in current_states {
+            if items_to_move.contains(&bs.id) {
+                removed_states.push(bs);
+            } else {
+                new_states.push(bs);
             }
         }
         
-        // Remove in reverse order
-        for &idx in removed_indices.iter().rev() {
-            removed_items.push((
-                self.tree_handle.branches.remove(idx),
-                self.tree_handle.branch_content.remove(idx),
-                self.state.children.remove(idx),
-            ));
-        }
-        
-        removed_items.reverse();
-        
-        // Determine the new parent and base depth based on drop position
+        // Calculate new parent and depth based on drop position
         let (new_parent_id, new_base_depth) = match drop_position {
-            DropPosition::Before | DropPosition::After => {
-                // When dropping before/after, use the target's parent and depth
-                target_info
+            DropPosition::Before => {
+                // Same level as target
+                (target_state.parent_id, target_state.depth)
+            }
+            DropPosition::After => {
+                // If dropping after a nested item and we want root level
+                // This happens when dragging to the bottom of the tree
+                // Check if this is meant to be a root-level drop
+                let is_last_item = new_states.iter()
+                    .rposition(|bs| bs.id == target_id)
+                    .map(|idx| idx == new_states.len() - 1 || 
+                        // Or it's the last at its level
+                        !new_states[idx + 1..].iter().any(|bs| bs.parent_id == target_state.parent_id))
+                    .unwrap_or(false);
+                
+                if is_last_item && target_state.parent_id.is_some() {
+                    // Check if we're dropping at the very end - make it root level
+                    let has_root_siblings_after = new_states.iter()
+                        .skip_while(|bs| bs.id != target_id)
+                        .skip(1)
+                        .any(|bs| bs.parent_id.is_none());
+                    
+                    if !has_root_siblings_after {
+                        // Drop at root level
+                        (None, 0)
+                    } else {
+                        // Keep at target's level
+                        (target_state.parent_id, target_state.depth)
+                    }
+                } else {
+                    // Normal after drop - same level as target
+                    (target_state.parent_id, target_state.depth)
+                }
             }
             DropPosition::Into => {
-                // When dropping INTO, the target becomes the parent
-                (Some(target_id), target_info.1 + 1)
+                // As child of target
+                (Some(target_id), target_state.depth + 1)
             }
         };
         
         // Find insertion point
         let insertion_index = match drop_position {
             DropPosition::Before => {
-                self.tree_handle.branches
-                    .iter()
-                    .position(|b| b.id == target_id)
-                    .unwrap_or(self.tree_handle.branches.len())
+                new_states.iter().position(|bs| bs.id == target_id)
+                    .unwrap_or(new_states.len())
             }
             DropPosition::Into => {
-                // Insert right after the target (as first child)
-                self.tree_handle.branches
-                    .iter()
-                    .position(|b| b.id == target_id)
-                    .map(|idx| idx + 1)
-                    .unwrap_or(self.tree_handle.branches.len())
+                // Insert as first child
+                let parent_pos = new_states.iter().position(|bs| bs.id == target_id)
+                    .unwrap_or(new_states.len());
+                parent_pos + 1
             }
             DropPosition::After => {
                 // Insert after target and all its descendants
-                let mut idx = self.tree_handle.branches
-                    .iter()
-                    .position(|b| b.id == target_id)
-                    .unwrap_or(self.tree_handle.branches.len());
-                idx += 1;
+                let mut idx = new_states.iter().position(|bs| bs.id == target_id)
+                    .map(|i| i + 1)
+                    .unwrap_or(new_states.len());
                 
-                // Skip past all descendants of target
-                while idx < self.tree_handle.branches.len() {
-                    if !self.is_descendant_of(self.tree_handle.branches[idx].id, target_id) {
+                // Skip all descendants
+                while idx < new_states.len() {
+                    let current = &new_states[idx];
+                    if self.is_descendant_of_in_states(current.id, target_id, &new_states) {
+                        idx += 1;
+                    } else {
                         break;
                     }
-                    idx += 1;
                 }
                 idx
             }
         };
         
-        // Track what the old depth was for the first dragged item
-        let old_depth = removed_items
-            .iter()
-            .find(|(b, _, _)| dragged_ids.contains(&b.id))
-            .map(|(b, _, _)| b.depth)
+        // Calculate depth change
+        let old_depth = removed_states.iter()
+            .find(|bs| dragged_ids.contains(&bs.id))
+            .map(|bs| bs.depth)
             .unwrap_or(0);
-        
         let depth_change = new_base_depth as i32 - old_depth as i32;
         
-        // Reinsert with updated hierarchy
-        for (i, (mut branch, content, tree)) in removed_items.into_iter().enumerate() {
-            // Only update parent_id for directly dragged items
-            if dragged_ids.contains(&branch.id) {
-                println!("Setting parent_id for {} from {:?} to {:?}", branch.id, branch.parent_id, new_parent_id);
-                branch.parent_id = new_parent_id;
-                branch.depth = new_base_depth;
+        // Update and insert moved items
+        let mut insert_offset = 0;
+        for mut bs in removed_states {
+            if dragged_ids.contains(&bs.id) {
+                bs.parent_id = new_parent_id;
+                bs.depth = new_base_depth;
             } else {
-                // This is a descendant - adjust its depth relative to its parent
-                branch.depth = (branch.depth as i32 + depth_change).max(0) as u16;
+                // Descendant of dragged item
+                bs.depth = (bs.depth as i32 + depth_change).max(0) as u16;
             }
-            
-            let insert_at = insertion_index + i;
-            if insert_at <= self.tree_handle.branches.len() {
-                self.tree_handle.branches.insert(insert_at, branch);
-                self.tree_handle.branch_content.insert(insert_at, content);
-                self.state.children.insert(insert_at, tree);
-            } else {
-                self.tree_handle.branches.push(branch);
-                self.tree_handle.branch_content.push(content);
-                self.state.children.push(tree);
-            }
+            new_states.insert(insertion_index + insert_offset, bs);
+            insert_offset += 1;
         }
         
-        // Save the new order to state
-        let new_order: Vec<usize> = self.tree_handle.branches.iter().map(|b| b.id).collect();
-        
+        // Update the state
         let (_, state) = self.state.state.downcast_mut::<(Metrics, State)>();
-        state.branch_order = Some(new_order);
+        state.branch_state = Some(new_states);
         
+        // Update has_children flags
         self.update_has_children_flags();
     }
 
-    fn collect_branch_and_descendants(&self, branch_id: usize, result: &mut HashSet<usize>) {
-        result.insert(branch_id);
-        
-        // Find all direct children and recursively collect their descendants
-        for branch in &self.tree_handle.branches {
-            if branch.parent_id == Some(branch_id) {
-                self.collect_branch_and_descendants(branch.id, result);
-            }
-        }
-    }
-
-    fn find_insertion_index(&self, target_id: usize, drop_position: &DropPosition) -> usize {
-        let target_index = self.tree_handle.branches
-            .iter()
-            .position(|b| b.id == target_id)
-            .unwrap_or(self.tree_handle.branches.len());
-
-        match drop_position {
-            DropPosition::Before => target_index,
-            DropPosition::Into => target_index + 1,
-            DropPosition::After => {
-                // Find the end of target's subtree
-                let mut idx = target_index + 1;
-                while idx < self.tree_handle.branches.len() {
-                    if !self.is_descendant_of(self.tree_handle.branches[idx].id, target_id) {
-                        break;
-                    }
-                    idx += 1;
-                }
-                idx
-            }
-        }
-    }
-
-    fn is_descendant_of(&self, potential_child: usize, potential_ancestor: usize) -> bool {
+    // Helper to check if an item is a descendant using the states array
+    fn is_descendant_of_in_states(&self, potential_child: usize, potential_ancestor: usize, states: &[BranchState]) -> bool {
         let mut current_id = Some(potential_child);
         
         while let Some(id) = current_id {
-            if let Some(branch) = self.tree_handle.branches.iter().find(|b| b.id == id) {
-                if branch.parent_id == Some(potential_ancestor) {
+            if let Some(bs) = states.iter().find(|s| s.id == id) {
+                if bs.parent_id == Some(potential_ancestor) {
                     return true;
                 }
-                current_id = branch.parent_id;
+                current_id = bs.parent_id;
             } else {
                 break;
             }
         }
         false
+    }
+
+    fn collect_branch_and_descendants(&self, branch_id: usize, result: &mut HashSet<usize>) {
+        result.insert(branch_id);
+        
+        // Use saved state to find children
+        let (_, state) = self.state.state.downcast_ref::<(Metrics, State)>();
+        
+        let children: Vec<usize> = if let Some(ref branch_states) = state.branch_state {
+            // Use saved parent relationships
+            branch_states.iter()
+                .filter(|bs| bs.parent_id == Some(branch_id))
+                .map(|bs| bs.id)
+                .collect()
+        } else {
+            // Fall back to original
+            self.tree_handle.branches.iter()
+                .filter(|b| b.parent_id == Some(branch_id))
+                .map(|b| b.id)
+                .collect()
+        };
+        
+        for child_id in children {
+            self.collect_branch_and_descendants(child_id, result);
+        }
     }
 
     fn update_has_children_flags(&mut self) {
@@ -2041,7 +2218,6 @@ where
         Element::new(tree)
     }
 }
-
 
 /// A branch in a tree that contains content and can have children.
 #[allow(missing_debug_implementations)]
@@ -2101,12 +2277,6 @@ pub enum DropPosition {
     After, 
     Into, // As child
 }
-
-
-
-
-
-
 
 /// The theme catalog for the tree widget
 pub trait Catalog {
@@ -2168,11 +2338,10 @@ impl Catalog for iced::Theme {
     fn default<'a>() -> Self::Class<'a> {
         Box::new(|theme| {
             let palette = theme.extended_palette();
-            let is_dark = palette.background.base.color.r < 0.5;
             
             Style {
                 text: palette.background.base.text,
-                selection_background: palette.background.base.color,
+                selection_background: palette.background.weakest.color,
                 selection_text: palette.background.base.text,
                 selection_border: palette.secondary.base.color,
                 focus_border: Color::from_rgba(
@@ -2182,7 +2351,7 @@ impl Catalog for iced::Theme {
                     0.5
                 ),
                 arrow_color: palette.background.strong.color,
-                line_color: palette.background.strong.color,
+                line_color: palette.primary.weak.color,
                 accept_drop_indicator_color: palette.primary.strong.color,
                 deny_drop_indicator_color: palette.danger.strong.color,
             }
@@ -2193,5 +2362,3 @@ impl Catalog for iced::Theme {
         class(self)
     }
 }
-
-
