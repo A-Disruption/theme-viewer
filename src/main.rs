@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 mod widget;
 mod theme_helper;
 mod widget_helper;
-mod tree_example;
 
 fn main() {
     iced::daemon(ThemeViewer::new, ThemeViewer::update, ThemeViewer::view)
@@ -22,7 +21,6 @@ struct ThemeViewer {
     windows: BTreeMap<window::Id, Window>,
     theme_builder: theme_helper::PaletteBuilder,
     widget_builder: widget_helper::WidgetVisualizer,
-    tree_example: tree_example::App,
     themes: Vec<Theme>,
     theme: Option<Theme>,
     show_custom_theme_menu: bool,
@@ -63,8 +61,6 @@ enum Message {
     ThemeHelper(theme_helper::Message),
     // Widget Builder Messages
     WidgetHelper(widget_helper::Message),
-    // Tree Example Builder Messages
-    TreeHelper(tree_example::Message),
 
     //window handles
     WindowClosed(iced::window::Id),
@@ -83,7 +79,6 @@ impl ThemeViewer {
             windows: BTreeMap::new(),
             theme_builder: theme_helper::PaletteBuilder::new(),
             widget_builder: widget_helper::WidgetVisualizer::new(),
-            tree_example: tree_example::App::new(),
             themes: themes,
             theme: Some(iced::theme::Theme::Dark),
             show_custom_theme_menu: false,
@@ -204,17 +199,6 @@ impl ThemeViewer {
                         return task.map(Message::WidgetHelper)
                     }
                     widget_helper::Action::None => { }
-                }
-                Task::none()
-            }
-
-            // Tree Example Helper
-            Message::TreeHelper(msg) => {
-                match tree_example::App::update(&mut self.tree_example, msg) {
-                    tree_example::Action::Run(task) => {
-                        return task.map(Message::TreeHelper)
-                    }
-                    tree_example::Action::None => { }
                 }
                 Task::none()
             }
@@ -506,8 +490,6 @@ impl ThemeViewer {
                 WindowEnum::Main => {
                     if !self.show_widget_builder && !self.show_tree_example {
                         main_window_content
-                    } else if !self.show_widget_builder {
-                        self.tree_example.view().map(Message::TreeHelper)
                     }
                     else {
                         self.widget_builder.view().map(Message::WidgetHelper)

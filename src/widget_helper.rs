@@ -8,7 +8,6 @@ use iced::{
 };
 use std::collections::HashMap;
 use crate::widget::generic_overlay::overlay_button;
-use crate::widget::tree;
 
 // ============================================================================
 // CORE DATA STRUCTURES - Simplified ID-based approach
