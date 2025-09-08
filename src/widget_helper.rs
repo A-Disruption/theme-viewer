@@ -1,13 +1,18 @@
 use iced::{
     alignment::{Horizontal, Vertical},
     widget::{
-        button, checkbox, column, container, horizontal_rule, horizontal_space, pick_list, progress_bar, radio, row, scrollable, slider, text, text_input, toggler, vertical_space, Button, Column, Container, Radio, Row, Space, Text, TextInput
+        button, checkbox, column, container, horizontal_rule, horizontal_space, vertical_rule, pick_list, progress_bar, radio, row, scrollable, slider, text, text_input, toggler, vertical_space, Button, Column, Container, Radio, Row, Space, Text, TextInput
     },
     Alignment, Background, Border, Color, Element, Font, Length::{self, FillPortion}, Padding, Shadow,
     Theme, Vector,
 };
+use iced::time;
+use std::time::Duration;
 use std::collections::HashMap;
 use crate::widget::generic_overlay::overlay_button;
+mod controls;
+use controls::*;
+use widgets::tree::{tree_handle, branch, DropInfo, DropPosition, Branch};
 
 // ============================================================================
 // CORE DATA STRUCTURES - Simplified ID-based approach
@@ -18,7 +23,8 @@ use crate::widget::generic_overlay::overlay_button;
 pub enum PropertyChange {
     // Common properties
     WidgetName(String),
-    ShowWidgetBounds(bool),
+    //ShowWidgetBounds(bool),
+    ShowWidgetBounds,
     Width(Length),
     Height(Length),
     PaddingTop(f32),
@@ -80,6 +86,11 @@ pub enum PropertyChange {
 
     // Progress properties
     ProgressValue(f32),
+    ProgressMin(f32),
+    ProgressMax(f32),
+    ProgressLength(Length),     // main axis (width if horizontal, height if vertical)
+    ProgressGirth(Length),      // thickness (height if horizontal, width if vertical)
+    ProgressVertical(bool),     // orientation
     
     // Toggler properties
     TogglerActive(bool),
@@ -92,6 +103,10 @@ pub enum PropertyChange {
     PickListSelected(Option<String>),
     PickListPlaceholder(String),
     PickListOptions(Vec<String>),
+
+    // Rule properties
+    RuleOrientation(RuleOrientation),
+    RuleThickness(f32),
 }
 
 // Helper function to apply property changes
@@ -108,7 +123,8 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::Spacing(value) => properties.spacing = value,
 
         PropertyChange::WidgetName(value) => properties.widget_name = value,
-        PropertyChange::ShowWidgetBounds(value) => properties.show_widget_bounds = value,
+        //PropertyChange::ShowWidgetBounds(value) => properties.show_widget_bounds = value,
+        PropertyChange::ShowWidgetBounds => properties.show_widget_bounds = !properties.show_widget_bounds,
 
         PropertyChange::BorderWidth(value) => properties.border_width = value,
         PropertyChange::BorderRadius(value) => properties.border_radius = value,
@@ -160,7 +176,26 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::RadioSpacing(value) => properties.radio_spacing = value,
 
         // Progress properties
-        PropertyChange::ProgressValue(value) => properties.progress_value = value,
+        PropertyChange::ProgressValue(v) => {
+            let lo = properties.progress_min.min(properties.progress_max);
+            let hi = properties.progress_min.max(properties.progress_max);
+            properties.progress_value = v.clamp(lo, hi);
+        }
+        PropertyChange::ProgressMin(v) => {
+            properties.progress_min = v;
+            let lo = properties.progress_min.min(properties.progress_max);
+            let hi = properties.progress_min.max(properties.progress_max);
+            properties.progress_value = properties.progress_value.clamp(lo, hi);
+        }
+        PropertyChange::ProgressMax(v) => {
+            properties.progress_max = v;
+            let lo = properties.progress_min.min(properties.progress_max);
+            let hi = properties.progress_min.max(properties.progress_max);
+            properties.progress_value = properties.progress_value.clamp(lo, hi);
+        }
+        PropertyChange::ProgressLength(len) => properties.progress_length = len,
+        PropertyChange::ProgressGirth(len) => properties.progress_girth = len,
+        PropertyChange::ProgressVertical(v) => properties.progress_vertical = v,
         
         // Toggler properties
         PropertyChange::TogglerActive(value) => properties.toggler_active = value,
@@ -173,6 +208,10 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::PickListSelected(value) => properties.picklist_selected = value,
         PropertyChange::PickListPlaceholder(value) => properties.picklist_placeholder = value,
         PropertyChange::PickListOptions(value) => properties.picklist_options = value,
+
+        // Rule properties
+        PropertyChange::RuleOrientation(v) => properties.rule_orientation = v,
+        PropertyChange::RuleThickness(v)   => properties.rule_thickness  = v,
         
         _ => {} // Placeholder for properties not implemented
     }
@@ -286,7 +325,6 @@ impl WidgetHierarchy {
     }
     
     pub fn add_child(&mut self, parent_id: WidgetId, widget_type: WidgetType) -> Result<WidgetId, String> {
-        // Check if we can add this child
         if !self.can_add_child(parent_id, widget_type) {
             if parent_id == self.root.id {
                 if self.root.children.is_empty() {
@@ -298,13 +336,23 @@ impl WidgetHierarchy {
                 return Err(format!("Cannot add {:?} to this parent", widget_type));
             }
         }
-        
-        // Create new widget
+
         let child_id = WidgetId(self.next_id);
         self.next_id += 1;
-        let child = Widget::new(widget_type, child_id);
-        
-        // Add to parent
+        let mut child = Widget::new(widget_type, child_id);
+
+        let parent_is_under_scrollable =
+            matches!(self.get_widget_by_id(parent_id).map(|p| p.widget_type), Some(WidgetType::Scrollable))
+            || self.has_scrollable_ancestor(parent_id);
+
+        if parent_is_under_scrollable {
+            let orig = child.properties.height;
+            if matches!(orig, Length::Fill | Length::FillPortion(_)) {
+                child.properties.saved_height_before_scrollable = Some(orig);
+                child.properties.height = Length::Shrink;
+            }
+        }
+
         if let Some(parent) = self.get_widget_by_id_mut(parent_id) {
             parent.children.push(child);
             Ok(child_id)
@@ -337,7 +385,7 @@ impl WidgetHierarchy {
         }
     }
     
-    fn find_parent_id(&self, child_id: WidgetId) -> Option<WidgetId> {
+    pub fn find_parent_id(&self, child_id: WidgetId) -> Option<WidgetId> {
         fn find_parent(widget: &Widget, target_id: WidgetId) -> Option<WidgetId> {
             for child in &widget.children {
                 if child.id == target_id {
@@ -352,7 +400,21 @@ impl WidgetHierarchy {
         find_parent(&self.root, child_id)
     }
 
-    pub fn apply_property_change(&mut self, id: WidgetId, change: PropertyChange) {
+    pub fn apply_property_change(&mut self, id: WidgetId, mut change: PropertyChange) {
+        if let PropertyChange::Height(h) = change.clone() {
+            if self.has_scrollable_ancestor(id) {
+                if matches!(h, Length::Fill | Length::FillPortion(_)) {
+                    if let Some(w) = self.get_widget_by_id_mut(id) {
+                        if w.properties.saved_height_before_scrollable.is_none() {
+                            w.properties.saved_height_before_scrollable = Some(h);
+                        }
+                        w.properties.height = Length::Shrink; // clamp
+                    }
+                    return;
+                }
+            }
+        }
+
         if let Some(widget) = self.get_widget_by_id_mut(id) {
             apply_property_change(&mut widget.properties, change);
         }
@@ -370,6 +432,206 @@ impl WidgetHierarchy {
             }
         }
     }
+
+    pub fn move_widget(
+        &mut self,
+        id: WidgetId,
+        new_parent_id: WidgetId,
+        mut new_index: usize,
+    ) -> Result<(), String> {
+        if id == self.root.id {
+            return Err("Cannot move root widget".into());
+        }
+        if !self.widget_exists(id) {
+            return Err("Widget to move not found".into());
+        }
+        if !self.widget_exists(new_parent_id) {
+            return Err("New parent not found".into());
+        }
+
+        // Prevent cycles: cannot move a node into its own subtree
+        if self.is_descendant(id, new_parent_id) {
+            return Err("Cannot move a widget into its own descendant".into());
+        }
+
+        // Parent capability checks
+        let new_parent_ty = self.get_widget_by_id(new_parent_id).unwrap().widget_type;
+        if !can_have_children(&new_parent_ty) {
+            return Err(format!("{new_parent_ty:?} cannot have children"));
+        }
+
+        // Root container constraints
+        if new_parent_id == self.root.id {
+            // Only Column/Row allowed under root
+            let moving_ty = self.get_widget_by_id(id).unwrap().widget_type;
+            if !matches!(moving_ty, WidgetType::Column | WidgetType::Row) {
+                return Err("Root can only contain Column or Row".into());
+            }
+            // Root can have only one child (unless we're reordering the same one)
+            let root_children = &self.root.children;
+            let already_under_root = self.find_parent_id(id) == Some(self.root.id);
+            if !already_under_root && !root_children.is_empty() {
+                return Err("Root container can only have one child".into());
+            }
+            // Clamp index for root (0 or existing 0)
+            new_index = 0;
+        }
+
+        // Detach node from current parent
+        let old_parent_id = self.find_parent_id(id).ok_or("Old parent not found")?;
+        let mut node = self.remove_and_return(id).ok_or("Failed to detach node")?;
+
+        // If moving within the same parent and we removed a lower index, fix target index
+        if old_parent_id == new_parent_id {
+            let siblings_len = self.get_widget_by_id(new_parent_id).unwrap().children.len();
+            // After removal, children length decreased by 1. Clamp index accordingly.
+            new_index = new_index.min(siblings_len);
+        } else {
+            let siblings_len = self.get_widget_by_id(new_parent_id).unwrap().children.len();
+            new_index = new_index.min(siblings_len);
+        }
+
+        // Insert into new parent
+        let parent = self.get_widget_by_id_mut(new_parent_id).ok_or("New parent not found")?;
+        parent.children.insert(new_index, node);
+
+        // Keep selection reasonable
+        self.selected_id = Some(id);
+        Ok(())
+    }
+
+    fn is_descendant(&self, ancestor: WidgetId, candidate: WidgetId) -> bool {
+        fn walk(w: &Widget, anc: WidgetId, cand: WidgetId) -> bool {
+            if w.id == anc {
+                return contains(&w.children, cand);
+            }
+            for c in &w.children {
+                if walk(c, anc, cand) {
+                    return true;
+                }
+            }
+            false
+        }
+        fn contains(children: &[Widget], id: WidgetId) -> bool {
+            for c in children {
+                if c.id == id { return true; }
+                if contains(&c.children, id) { return true; }
+            }
+            false
+        }
+        walk(&self.root, ancestor, candidate)
+    }
+
+    /// Remove a node from the tree and return it.
+    fn remove_and_return(&mut self, id: WidgetId) -> Option<Widget> {
+        fn take_from(parent: &mut Widget, id: WidgetId) -> Option<Widget> {
+            if let Some(pos) = parent.children.iter().position(|c| c.id == id) {
+                return Some(parent.children.remove(pos));
+            }
+            for c in &mut parent.children {
+                if let Some(found) = take_from(c, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if id == self.root.id { return None; }
+        take_from(&mut self.root, id)
+    }
+
+    /// Toggle Row<->Column and Container<->Scrollable without resetting props/children
+    pub fn swap_kind(&mut self, id: WidgetId) {
+        let old_type;
+        {
+            let w = match self.get_widget_by_id(id) { Some(w) => w, None => return };
+            old_type = w.widget_type;
+        }
+
+        if let Some(w) = self.get_widget_by_id_mut(id) {
+            let new_type = match w.widget_type {
+                WidgetType::Row        => WidgetType::Column,
+                WidgetType::Column     => WidgetType::Row,
+                WidgetType::Container  => WidgetType::Scrollable,
+                WidgetType::Scrollable => WidgetType::Container,
+                _ => w.widget_type,
+            };
+
+            if new_type != w.widget_type {
+                w.widget_type = new_type;
+                w.name = format!("{:?}", w.widget_type);
+            }
+        }
+
+        // If we just became a Scrollable, clamp subtree.
+        if let Some(w) = self.get_widget_by_id(id) {
+            if matches!(w.widget_type, WidgetType::Scrollable) {
+                drop(w);
+                self.sanitize_subtree_for_scrollable(id);
+                return;
+            }
+        }
+
+        // If we were a Scrollable and swapped back to Container, restore subtree.
+        if matches!(old_type, WidgetType::Scrollable) {
+            self.restore_subtree_after_scrollable(id);
+        }
+    }
+
+    // Is there a Scrollable anywhere above this node?
+    pub fn has_scrollable_ancestor(&self, mut id: WidgetId) -> bool {
+        while let Some(parent_id) = self.find_parent_id(id) {
+            if let Some(parent) = self.get_widget_by_id(parent_id) {
+                if matches!(parent.widget_type, WidgetType::Scrollable) {
+                    return true;
+                }
+                id = parent_id;
+            } else {
+                break;
+            }
+        }
+        false
+    }
+
+    // Force all descendants of a Scrollable to NOT fill vertically
+    fn sanitize_subtree_for_scrollable(&mut self, root_scrollable_id: WidgetId) {
+        fn clamp_descendants(widget: &mut Widget) {
+            match widget.properties.height {
+                Length::Fill | Length::FillPortion(_) => {
+                    if widget.properties.saved_height_before_scrollable.is_none() {
+                        widget.properties.saved_height_before_scrollable = Some(widget.properties.height);
+                    }
+                    widget.properties.height = Length::Shrink;
+                }
+                _ => {}
+            }
+            for child in &mut widget.children {
+                clamp_descendants(child);
+            }
+        }
+        if let Some(scrollable) = self.get_widget_by_id_mut(root_scrollable_id) {
+            for child in &mut scrollable.children {
+                clamp_descendants(child);
+            }
+        }
+    }
+
+    // Restore any saved heights after leaving a Scrollable subtree
+    fn restore_subtree_after_scrollable(&mut self, root_container_id: WidgetId) {
+        fn restore(widget: &mut Widget) {
+            if let Some(h) = widget.properties.saved_height_before_scrollable.take() {
+                widget.properties.height = h;
+            }
+            for child in &mut widget.children {
+                restore(child);
+            }
+        }
+        if let Some(container) = self.get_widget_by_id_mut(root_container_id) {
+            for child in &mut container.children {
+                restore(child);
+            }
+        }
+    }
+
 }
 
 // ============================================================================
@@ -411,6 +673,36 @@ impl WidgetVisualizer {
             
             }
 
+            Message::TreeMove { id, new_parent, new_index } => {
+                let _ = self.hierarchy.move_widget(id, new_parent, new_index);
+            }
+
+            Message::TreeDrop { dragged_id, target_id, position } => {
+                match position {
+                    DropPosition::Into => {
+                        // Drop into target - simple case
+                        let _ = self.hierarchy.move_widget(dragged_id, target_id, 0);
+                    }
+                    DropPosition::Before | DropPosition::After => {
+                        // Need target's parent and position
+                        if let Some(parent_id) = self.hierarchy.find_parent_id(target_id) {
+                            if let Some(parent) = self.hierarchy.get_widget_by_id(parent_id) {
+                                let target_index = parent.children.iter()
+                                    .position(|c| c.id == target_id)
+                                    .unwrap_or(0);
+                                
+                                let new_index = match position {
+                                    DropPosition::After => target_index + 1,
+                                    _ => target_index,
+                                };
+                                
+                                let _ = self.hierarchy.move_widget(dragged_id, parent_id, new_index);
+                            }
+                        }
+                    }
+                }
+            }
+
             Message::SelectWidget(id) => {
                 self.hierarchy.select_widget(id);
             }
@@ -420,11 +712,22 @@ impl WidgetVisualizer {
             }
             
             Message::AddChild(parent_id, widget_type) => {
-                if let Ok(new_id) = self.hierarchy.add_child(parent_id, widget_type) {}
+                println!("Adding {:?} to parent {:?}", widget_type, parent_id);
+                if let Ok(new_id) = self.hierarchy.add_child(parent_id, widget_type) {
+                    println!("Successfully added with id {:?}", new_id);
+                    // Debug print the tree
+                    self.debug_print_widget(&self.hierarchy.root(), 0);
+                } else {
+                    println!("Failed to add child");
+                }
             }
             
             Message::PropertyChanged(id, change) => {
                 self.hierarchy.apply_property_change(id, change);
+            }
+
+            Message::SwapKind(id) => {
+                self.hierarchy.swap_kind(id);
             }
 
             // Interactive widget messages
@@ -467,6 +770,14 @@ impl WidgetVisualizer {
             
             Message::ShowBordersToggled(show) => {
                 self.show_borders = show;
+            }
+
+            Message::Explain(id) => {
+                // self.hierarchy.apply_property_change(id, PropertyChange::ShowWidgetBounds(true));
+                self.hierarchy.apply_property_change(id, PropertyChange::ShowWidgetBounds);
+            }
+            Message::ExplainTimeout(id) => { // Need to add Subscription to time to implement
+                //self.hierarchy.apply_property_change(id, PropertyChange::ShowWidgetBounds(false));
             }
             
             Message::ThemeChanged(theme) => {
@@ -529,9 +840,10 @@ impl WidgetVisualizer {
         .into()
     }
 
-    fn widget_tree_view(&self) -> Element<Message> {
-        self.build_tree_item(self.hierarchy.root(), 0, self.hierarchy.selected_id())
-    }
+
+     fn widget_tree_view(&self) -> Element<Message> {
+         self.build_tree_item(self.hierarchy.root(), 0, self.hierarchy.selected_id())
+     }
 
     fn build_tree_item(&self, widget: &Widget, depth: usize, selected_id: Option<WidgetId>) -> Element<Message> {
         let indent = "  ".repeat(depth);
@@ -540,6 +852,23 @@ impl WidgetVisualizer {
         // Create the overlay content for this specific widget
         let overlay_content = self.build_editor_for_widget(widget, widget.id);
         
+        // Determine if this widget can be swapped and the button label
+        let swap_label: Option<&'static str> = match widget.widget_type {
+            WidgetType::Row        => Some("Swap to Column"),
+            WidgetType::Column     => Some("Swap to Row"),
+            WidgetType::Container  => Some("Make Scrollable"),
+            WidgetType::Scrollable => Some("Make Container"),
+            _ => None,
+        };
+
+        // Optional Swap button element
+        let swap_btn: Option<Element<Message>> = swap_label.map(|label| {
+            button(label)
+                .on_press(Message::SwapKind(widget.id))
+                .style(button::secondary)
+                .into()
+        });
+
         let mut items = vec![
             row![
                 button(text(format!("{}{}", indent, widget.name)))
@@ -550,6 +879,8 @@ impl WidgetVisualizer {
                         button::secondary 
                     }),
                 horizontal_space(),
+                if let Some(b) = swap_btn { b } else { horizontal_space().into() },
+
                 // Create overlay button with this widget's specific content
                 overlay_button(
                     "Edit",
@@ -633,7 +964,7 @@ impl WidgetVisualizer {
             text("This represents your app's main content container")
                 .size(12)
                 .color(Color::from_rgb(0.6, 0.6, 0.6)),
-            horizontal_rule(10),
+            horizontal_rule(5),
             container(widget_preview)
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -671,22 +1002,7 @@ impl WidgetVisualizer {
                     }
                 }
                 
-                container(content)
-                    .width(props.width)
-                    .height(props.height)
-                    .padding(props.padding)
-                    .style(move |_theme: &Theme| {
-                        container::Style {
-                            background: Some(Background::Color(props.background_color)),
-                            border: Border {
-                                color: props.border_color,
-                                width: props.border_width,
-                                radius: props.border_radius.into(),
-                            },
-                            ..Default::default()
-                        }
-                    })
-                    .into()
+                return self.with_explain_overlay(content.into(), props);
             }
             
             WidgetType::Row => {
@@ -707,27 +1023,7 @@ impl WidgetVisualizer {
                     }
                 }
                 
-                // Wrap in container for visualization
-                container(content)
-                    .width(props.width)
-                    .height(props.height)
-                    .padding(props.padding)
-                    .style(move |_theme: &Theme| {
-                        if self.show_borders {
-                            container::Style {
-                                background: Some(Background::Color(Color::from_rgba(0.0, 1.0, 0.0, 0.1))),
-                                border: Border {
-                                    color: Color::from_rgb(0.0, 0.8, 0.0),
-                                    width: 1.0,
-                                    radius: 2.0.into(),
-                                },
-                                ..Default::default()
-                            }
-                        } else {
-                            container::Style::default()
-                        }
-                    })
-                    .into()
+                return self.with_explain_overlay(content.into(), props);
             }
             
             WidgetType::Column => {
@@ -747,32 +1043,13 @@ impl WidgetVisualizer {
                         content = content.push(self.build_widget_preview(child));
                     }
                 }
-                
-                container(content)
-                    .width(props.width)
-                    .height(props.height)
-                    .padding(props.padding)
-                    .style(move |_theme: &Theme| {
-                        if self.show_borders {
-                            container::Style {
-                                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 1.0, 0.1))),
-                                border: Border {
-                                    color: Color::from_rgb(0.0, 0.0, 0.8),
-                                    width: 1.0,
-                                    radius: 2.0.into(),
-                                },
-                                ..Default::default()
-                            }
-                        } else {
-                            container::Style::default()
-                        }
-                    })
-                    .into()
+
+                return self.with_explain_overlay(content.into(), props);
             }
             
             WidgetType::Button => {
                 let props = &widget.properties;
-                button(text(&props.text_content))
+                let content = button(text(&props.text_content))
                     .on_press(Message::ButtonPressed(widget.id))
                     .width(props.width)
                     .height(props.height)
@@ -783,13 +1060,14 @@ impl WidgetVisualizer {
                         ButtonStyleType::Success => button::success,
                         ButtonStyleType::Danger => button::danger,
                         ButtonStyleType::Text => button::text,
-                    })
-                    .into()
+                    });
+                
+                return self.with_explain_overlay(content.into(), props);
             }
             
             WidgetType::Text => {
                 let props = &widget.properties;
-                text(&props.text_content)
+                let content = text(&props.text_content)
                     .width(props.width)
                     .height(props.height)
                     .size(props.text_size)
@@ -797,35 +1075,37 @@ impl WidgetVisualizer {
                     .font(match props.font {
                         FontType::Default => Font::default(),
                         FontType::Monospace => Font::MONOSPACE,
-                    })
-                    .into()
+                    });
+
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::TextInput => {
                 let props = &widget.properties;
-                let input = text_input(&props.text_input_placeholder, &props.text_input_value)
+                let content = text_input(&props.text_input_placeholder, &props.text_input_value)
                     .on_input(|value| Message::TextInputChanged(widget.id, value))
                     .size(props.text_input_size)
                     .padding(props.text_input_padding)
                     .width(props.width)
                     .secure(props.is_secure);
                 
-                input.into()
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::Checkbox => {
                 let props = &widget.properties;
-                checkbox(&props.checkbox_label, props.checkbox_checked)
+                let content = checkbox(&props.checkbox_label, props.checkbox_checked)
                     .size(props.checkbox_size)
                     .spacing(props.checkbox_spacing)
                     .width(props.width)
-                    .on_toggle(|_| Message::CheckboxToggled(widget.id, !props.checkbox_checked))
-                    .into()
+                    .on_toggle(|_| Message::CheckboxToggled(widget.id, !props.checkbox_checked));
+                
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::Radio => {
                 let props = &widget.properties;
-                if !props.radio_options.is_empty() {
+                let content: Element<_> = if !props.radio_options.is_empty() {
                     column(
                         props.radio_options.iter().enumerate().map(|(i, option)| {
                             radio(
@@ -845,13 +1125,15 @@ impl WidgetVisualizer {
                     .into()
                 } else {
                     text("No radio options").into()
-                }
+                };
+
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::Slider => {
                 let props = &widget.properties;
 
-                column![
+                let content = column![
                     slider(props.slider_min..=props.slider_max, props.slider_value, move |value| {
                         Message::SliderChanged(widget.id, value)
                     })
@@ -860,36 +1142,47 @@ impl WidgetVisualizer {
                     text(format!("{:.1}", props.slider_value)).size(12).center(),
                 ]
                 .width(props.width)
-                .height(props.height)
-                .into()
+                .height(props.height);
+                
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::ProgressBar => {
                 let props = &widget.properties;
-                progress_bar(0.0..=1.0, props.progress_value)
-                    .into()
+
+                let mut content = progress_bar(props.progress_min..=props.progress_max, props.progress_value)
+                    .length(props.progress_length)
+                    .girth(props.progress_girth);
+
+                if props.progress_vertical {
+                    content = content.vertical();
+                }
+
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::Toggler => {
                 let props = &widget.properties;
-                toggler(props.toggler_active)
+                let content = toggler(props.toggler_active)
                     .on_toggle(|_| Message::TogglerToggled(widget.id, !props.toggler_active))
                     .size(props.toggler_size)
                     .spacing(props.toggler_spacing)
-                    .width(props.width)
-                    .into()
+                    .width(props.width);
+                
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::PickList => {
                 let props = &widget.properties;
-                pick_list(
+                let content = pick_list(
                     props.picklist_options.clone(),
                     props.picklist_selected.clone(),
                     |selected| Message::PickListSelected(widget.id, selected)
                 )
                 .placeholder(&props.picklist_placeholder)
-                .width(props.width)
-                .into()
+                .width(props.width);
+                
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::Scrollable => {
@@ -907,39 +1200,47 @@ impl WidgetVisualizer {
                     }
                 }
                 
-                scrollable(content)
+                let content = scrollable(content)
                     .width(props.width)
-                    .height(props.height)
-                    .into()
+                    .height(props.height);
+                
+                return self.with_explain_overlay(content.into(), props);
             }
 
             WidgetType::Space => {
                 let props = &widget.properties;
-                vertical_space()
-                    .width(props.width)
-                    .height(props.height)
-                    .into()
-            }
+                let s = vertical_space().width(props.width).height(props.height);
 
-/*             WidgetType::Rule => {
-                let props = &widget.properties;
-                // Determine if it's horizontal or vertical based on dimensions
-                if matches!(props.width, Length::Fill) || 
-                   (matches!(props.width, Length::Fixed(w)) if w > 50.0) {
-                    // Horizontal rule
-                    horizontal_rule(2)
-                        .width(props.width)
+                let content: Element<_> = if props.show_widget_bounds {
+                    container(s)
+                        .style(|_| container::Style {
+                            background: Some(Background::Color(Color::from_rgba(0.2, 0.6, 1.0, 0.18))),
+                            border: Border { color: Color::from_rgb(0.2, 0.6, 1.0), width: 1.0, radius: 2.0.into() },
+                            ..Default::default()
+                        })
                         .into()
                 } else {
-                    // Vertical rule  
-                    vertical_space()
-                        .width(Length::Fixed(2.0))
-                        .height(props.height)
-                        .into()
-                }
-            } */
+                    s.into()
+                };
+
+                return self.with_explain_overlay(content.into(), props);
+            }
+
+            WidgetType::Rule => {
+                let props = &widget.properties;
+
+                let content: Element<_> = match props.rule_orientation {
+                    RuleOrientation::Horizontal => {
+                        horizontal_rule(props.rule_thickness).into()
+                    }
+                    RuleOrientation::Vertical => {
+                        vertical_rule(props.rule_thickness).into()
+                    }
+                };
+
+                return self.with_explain_overlay(content.into(), props);
+            }
             
-            // Add other widget types as needed...
             _ => {
                 text(format!("{:?} preview", widget.widget_type)).into()
             }
@@ -955,1184 +1256,75 @@ impl WidgetVisualizer {
     }
     
     fn build_editor_for_widget(&self, widget: &Widget, widget_id: WidgetId) -> Element<Message> {
-        let controls = match widget.widget_type {
-            WidgetType::Container => self.container_controls(widget_id),
-            WidgetType::Row => self.row_controls(widget_id),
-            WidgetType::Column => self.column_controls(widget_id),
-            WidgetType::Button => self.button_controls(widget_id),
-            WidgetType::Text => self.text_controls(widget_id),
-            WidgetType::TextInput => self.text_input_controls(widget_id),
-            WidgetType::Checkbox => self.checkbox_controls(widget_id),
-            WidgetType::Radio => self.radio_controls(widget_id),
-            WidgetType::Toggler => self.toggler_controls(widget_id),
-            WidgetType::PickList => self.picklist_controls(widget_id),
-            // Add other widget types...
+        let controls_view: Element<Message> = match widget.widget_type {
+            WidgetType::Container  => container_controls(&self.hierarchy, widget_id),
+            WidgetType::Row       => row_controls(&self.hierarchy, widget_id),
+            WidgetType::Column    => column_controls(&self.hierarchy, widget_id),
+            WidgetType::Button    => button_controls(&self.hierarchy, widget_id),
+            WidgetType::Text      => text_controls(&self.hierarchy, widget_id),
+            WidgetType::TextInput => text_input_controls(&self.hierarchy, widget_id),
+            WidgetType::Checkbox  => checkbox_controls(&self.hierarchy, widget_id),
+            WidgetType::Radio     => radio_controls(&self.hierarchy, widget_id),
+            WidgetType::Toggler   => toggler_controls(&self.hierarchy, widget_id),
+            WidgetType::PickList  => picklist_controls(&self.hierarchy, widget_id),
+            WidgetType::Slider     => slider_controls(&self.hierarchy, widget_id),
+            WidgetType::Rule       => rule_controls(&self.hierarchy, widget_id),
+            WidgetType::Scrollable => scrollable_controls(&self.hierarchy, widget_id),
+            WidgetType::Space => space_controls(&self.hierarchy, widget_id),
+            WidgetType::ProgressBar => progress_controls(&self.hierarchy, widget_id),
             _ => column![text("Editor not implemented for this widget type")].into(),
         };
 
+        let explain_btn = button("Explain")
+            .on_press(Message::Explain(widget_id))
+            .style(button::secondary);
+
         column![
-            text(format!("Editing: {}", widget.name)).size(20),
-            horizontal_rule(10),
-            controls,
+            row![
+                text(format!("Editing: {}", widget.name)).size(20),
+                horizontal_space(),
+                explain_btn,
+            ],
+            horizontal_rule(5),
+            controls_view,
         ]
         .spacing(10)
         .padding(20)
         .into()
     }
-    
-    // Element to edit Container properties inside an Overlay
-    fn container_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Container Properties").size(16),
 
-            
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-
-
-             // Alignment controls
-            row![
-                column![
-                    text("Horizontal Align"),
-                    pick_list(
-                        vec![ContainerAlignX::Left, ContainerAlignX::Center, ContainerAlignX::Right],
-                        Some(props.align_x),
-                        move |v| Message::PropertyChanged(widget_id, PropertyChange::AlignX(v)),
-                    ),
-                ]
-                .spacing(5)
-                .width(FillPortion(1)),
-                
-                column![
-                    text("Vertical Align"),
-                    pick_list(
-                        vec![ContainerAlignY::Top, ContainerAlignY::Center, ContainerAlignY::Bottom],
-                        Some(props.align_y),
-                        move |v| Message::PropertyChanged(widget_id, PropertyChange::AlignY(v)),
-                    ),
-                ]
-                .spacing(5)
-                .width(FillPortion(1)),
-            ].spacing(15),
-            
-            row![
-                // Width control
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(150),
-                ]
-                .spacing(5)
-                .width(FillPortion(1)),
-                
-                // Height control  
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(150),
-                ]
-                .spacing(5)
-                .width(FillPortion(1)),
-            ].spacing(15),
-
-
-            // Border controls
-            text("Border").size(14),
-            row![
-                column![
-                    text("Border Width").size(12),
-                    slider(0.0..=15.0, props.border_width, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::BorderWidth(v))
-    }               ).step(1.0),
-                    text(format!("{:.0}", props.border_width)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-                column![
-                    text("Border Radius").size(12),
-                    slider(0.0..=15.0, props.border_radius, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::BorderRadius(v))
-                    }).step(1.0),
-                    text(format!("{:.0}", props.border_radius)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-/*                 column![  // will implement Color_picker widget here (maybe)
-                    text("Border Color").size(12),
-                ].spacing(5).width(Length::Fill), */ 
-            ].spacing(15),
-            
-            // Padding controls
-            text("Padding").size(14),
-            row![
-                column![
-                    text("Top").size(12),
-                    slider(0.0..=50.0, props.padding.top, move |v|{
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingTop(v))
-                    }) .step(1.0),
-                    text(format!("{:.0}", props.padding.top)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-                
-                column![
-                    text("Right").size(12),
-                    slider(0.0..=50.0, props.padding.right, move |v|
-                        { 
-                            Message::PropertyChanged(widget_id, PropertyChange::PaddingRight(v)) 
-                        }).step(1.0),
-                    text(format!("{:.0}", props.padding.right)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-            ].spacing(15),
-            
-            row![
-                column![
-                    text("Bottom").size(12),
-                    slider(0.0..=50.0, props.padding.bottom, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingBottom(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.bottom)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-                
-                column![
-                    text("Left").size(12),
-                    slider(0.0..=50.0, props.padding.left, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingLeft(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.left)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-            ].spacing(15),
-
-            // Shadow controls
-            column![
-                checkbox("Enable Shadow", props.has_shadow)
-                    .on_toggle( move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::HasShadow(v))
-                }),
-                
-                if props.has_shadow {
-                    column![
-                        row![
-                            column![
-                                text("Offset X").size(12),
-                                slider(-20.0..=20.0, props.shadow_offset.x, move |v| {
-                                    Message::PropertyChanged(widget_id, PropertyChange::ShadowOffsetX(v))
-                                })
-                                    .step(1.0),
-                                text(format!("{:.0}", props.shadow_offset.x)).size(12).center(),
-                            ].spacing(5),
-                            
-                            column![
-                                text("Offset Y").size(12),
-                                slider(-20.0..=20.0, props.shadow_offset.y, move |v| {
-                                    Message::PropertyChanged(widget_id, PropertyChange::ShadowOffsetY(v))
-                                })
-                                    .step(1.0),
-                                text(format!("{:.0}", props.shadow_offset.y)).size(12).center(),
-                            ].spacing(5),
-                        ].spacing(15),
-                        
-                        column![
-                            text("Blur Radius").size(12),
-                            slider(0.0..=50.0, props.shadow_blur, move |v| {
-                                Message::PropertyChanged(widget_id, PropertyChange::ShadowBlur(v))
-                            })
-                                .step(1.0),
-                            text(format!("{:.0}", props.shadow_blur)).size(12).center(),
-                        ].spacing(5),
-                    ].spacing(10)
-                } else {
-                    column![]
-                }
-            ].spacing(10),
-        ]
-        .spacing(15)
-        .into()
-
-        
+    fn with_explain_overlay<'a>(
+        &self,
+        inner: Element<'a, Message>,
+        props: &Properties,
+    ) -> Element<'a, Message> {
+        if props.show_widget_bounds {
+            container(inner)
+                .padding(4)
+                .style(|theme: &Theme| {
+                    let c = theme.extended_palette().primary.strong.color;
+                    container::Style {
+                        background: Some(Background::Color(Color::from_rgba(c.r, c.g, c.b, 0.06))),
+                        border: Border { color: c, width: 2.0, radius: 6.0.into() },
+                        ..Default::default()
+                    }
+                })
+                .into()
+        } else {
+            inner
+        }
     }
-    
-    fn row_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Row Properties").size(16),
 
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Spacing control
-            column![
-                text("Spacing between items"),
-                row![
-                    slider(0.0..=50.0, props.spacing, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::Spacing(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.spacing)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Vertical alignment of items in the row
-            column![
-                text("Vertical Alignment"),
-                pick_list(
-                    vec![AlignmentOption::Start, AlignmentOption::Center, AlignmentOption::End],
-                    Some(AlignmentOption::from_alignment(props.align_items)),
-                    move |selected_option| {
-                        Message::PropertyChanged(
-                            widget_id, 
-                            PropertyChange::AlignItems(selected_option.to_alignment())
-                        )
-                    },
-                ).placeholder("Choose alignment"),
-            ].spacing(5),
-            
-            // Width control
-            column![
-                text("Row Width"),
-                row![
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(150),
-                    text("(Fill, Shrink, or number for pixels)").size(10).color(Color::from_rgb(0.6, 0.6, 0.6)),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Height control
-            column![
-                text("Row Height"),
-                row![
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(150),
-                    text("(Usually Shrink for rows)").size(10).color(Color::from_rgb(0.6, 0.6, 0.6)),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Padding controls
-            text("Padding").size(14),
-            row![
-                column![
-                    text("Top").size(12),
-                    slider(0.0..=50.0, props.padding.top, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingTop(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.top)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-                
-                column![
-                    text("Right").size(12),
-                    slider(0.0..=50.0, props.padding.right, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingRight(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.right)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-            ].spacing(15),
-            
-            row![
-                column![
-                    text("Bottom").size(12),
-                    slider(0.0..=50.0, props.padding.bottom, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingBottom(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.bottom)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-                
-                column![
-                    text("Left").size(12),
-                    slider(0.0..=50.0, props.padding.left, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingLeft(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.left)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-            ].spacing(15)
-        ].into()            
-    }
-    
-    fn column_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Column Properties").size(16),
-
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Spacing control
-            column![
-                text("Spacing between items"),
-                row![
-                    slider(0.0..=50.0, props.spacing, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::Spacing(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.spacing)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Horizontal alignment of items in the column
-            column![
-                text("Horizontal Alignment"),
-                pick_list(
-                    vec![AlignmentOption::Start, AlignmentOption::Center, AlignmentOption::End],
-                    Some(AlignmentOption::from_alignment(props.align_items)),
-                    move |selected_option| {
-                        Message::PropertyChanged(
-                            widget_id, 
-                            PropertyChange::AlignItems(selected_option.to_alignment())
-                        )
-                    },
-                ).placeholder("Choose alignment"),
-            ].spacing(5),
-            
-            // Width and Height controls
-            row![
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(150),
-                ].spacing(5),
-                
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(150),
-                ].spacing(5),
-            ].spacing(15),
-            
-            // Padding controls
-            text("Padding").size(14),
-            row![
-                column![
-                    text("Top").size(12),
-                    slider(0.0..=50.0, props.padding.top, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingTop(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.top)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-                
-                column![
-                    text("Right").size(12),
-                    slider(0.0..=50.0, props.padding.right, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingRight(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.right)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-            ].spacing(15),
-            
-            row![
-                column![
-                    text("Bottom").size(12),
-                    slider(0.0..=50.0, props.padding.bottom, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingBottom(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.bottom)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-                
-                column![
-                    text("Left").size(12),
-                    slider(0.0..=50.0, props.padding.left, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingLeft(v))
-                    })
-                        .step(1.0),
-                    text(format!("{:.0}", props.padding.left)).size(12).center(),
-                ].spacing(5).width(Length::Fill),
-            ].spacing(15),
-        ]
-        .spacing(15)
-        .padding(20)
-        .into()
-    }
-    
-    fn button_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Button Properties").size(16),
-
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Button text
-            column![
-                text("Button Text"),
-                text_input("Text", &props.text_content)
-                    .on_input(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TextContent(v))
-                    })
-                    .width(250),
-            ].spacing(5),
-            
-            // Button style
-            column![
-                text("Button Style"),
-                pick_list(
-                    vec![
-                        ButtonStyleType::Primary,
-                        ButtonStyleType::Secondary,
-                        ButtonStyleType::Success,
-                        ButtonStyleType::Danger,
-                        ButtonStyleType::Text,
-                    ],
-                    Some(props.button_style),
-                    move |v| Message::PropertyChanged(widget_id, PropertyChange::ButtonStyle(v)),
-                ).width(250),
-            ].spacing(5),
-            
-            // Size controls
-            row![
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-                
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-            ].spacing(15),
-            
-            // Padding controls
-            text("Padding").size(14),
-            row![
-                column![
-                    text("Top"),
-                    slider(0.0..=30.0, props.padding.top, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingTop(v))
-                    }).step(1.0),
-                    text(format!("{:.0}", props.padding.top)).size(12).center(),
-                ].spacing(5),
-                
-                column![
-                    text("Right"),
-                    slider(0.0..=30.0, props.padding.right, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingRight(v))
-                    }).step(1.0),
-                    text(format!("{:.0}", props.padding.right)).size(12).center(),
-                ].spacing(5),
-            ].spacing(15),
-            
-            row![
-                column![
-                    text("Bottom"),
-                    slider(0.0..=30.0, props.padding.bottom, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingBottom(v))
-                    }).step(1.0),
-                    text(format!("{:.0}", props.padding.bottom)).size(12).center(),
-                ].spacing(5),
-                
-                column![
-                    text("Left"),
-                    slider(0.0..=30.0, props.padding.left, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PaddingLeft(v))
-                    }).step(1.0),
-                    text(format!("{:.0}", props.padding.left)).size(12).center(),
-                ].spacing(5),
-            ].spacing(15),
-        ]
-        .spacing(15)
-        .into()
-    }
-    
-    fn text_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Text Properties").size(16),
-
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Text content
-            column![
-                text("Text Content"),
-                text_input("Content", &props.text_content)
-                    .on_input(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TextContent(v))
-                    })
-                    .width(300),
-            ].spacing(5),
-            
-            // Text size
-            column![
-                text("Font Size"),
-                row![
-                    slider(8.0..=72.0, props.text_size, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TextSize(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.text_size)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Font type
-            column![
-                text("Font"),
-                pick_list(
-                    vec![FontType::Default, FontType::Monospace],
-                    Some(props.font),
-                    move |v| Message::PropertyChanged(widget_id, PropertyChange::Font(v)),
-                ).width(200),
-            ].spacing(5),
-            
-            // Size controls
-            row![
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-                
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-            ].spacing(15),
-        ]
-        .spacing(15)
-        .into()
-    }
-    
-    fn text_input_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Text Input Properties").size(16),
-
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Placeholder text
-            column![
-                text("Placeholder Text"),
-                text_input("Placeholder", &props.text_input_placeholder)
-                    .on_input(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TextInputPlaceholder(v))
-                    })
-                    .width(300),
-            ].spacing(5),
-            
-            // Font size
-            column![
-                text("Font Size"),
-                row![
-                    slider(8.0..=32.0, props.text_input_size, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TextInputSize(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.text_input_size)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Internal padding
-            column![
-                text("Internal Padding"),
-                row![
-                    slider(0.0..=30.0, props.text_input_padding, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TextInputPadding(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.text_input_padding)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Secure input toggle
-            checkbox("Secure Input (Password)", props.is_secure)
-                .on_toggle(move |v| {
-                    Message::PropertyChanged(widget_id, PropertyChange::IsSecure(v))
-                }),
-            
-            // Size controls
-            row![
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-                
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-            ].spacing(15),
-        ]
-        .spacing(15)
-        .into()
-    }
-    
-    fn checkbox_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Checkbox Properties").size(16),
-
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Label text
-            column![
-                text("Label Text"),
-                text_input("Label", &props.checkbox_label)
-                    .on_input(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::CheckboxLabel(v))
-                    })
-                    .width(250),
-            ].spacing(5),
-            
-            // Checkbox size
-            column![
-                text("Checkbox Size"),
-                row![
-                    slider(12.0..=40.0, props.checkbox_size, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::CheckboxSize(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.checkbox_size)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Spacing between checkbox and label
-            column![
-                text("Label Spacing"),
-                row![
-                    slider(0.0..=30.0, props.checkbox_spacing, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::CheckboxSpacing(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.checkbox_spacing)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Default checked state
-            checkbox("Default Checked State", props.checkbox_checked)
-                .on_toggle(move |v| {
-                    Message::PropertyChanged(widget_id, PropertyChange::CheckboxChecked(v))
-                }),
-            
-            // Size controls
-            row![
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-                
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-            ].spacing(15),
-        ]
-        .spacing(15)
-        .into()
-    }
-    
-    fn toggler_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Toggler Properties").size(16),
-
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Label text
-            column![
-                text("Label Text"),
-                text_input("Label", &props.toggler_label)
-                    .on_input(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TogglerLabel(v))
-                    })
-                    .width(250),
-            ].spacing(5),
-            
-            // Toggler size
-            column![
-                text("Toggler Size"),
-                row![
-                    slider(12.0..=40.0, props.toggler_size, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TogglerSize(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.toggler_size)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Spacing between toggler and label
-            column![
-                text("Label Spacing"),
-                row![
-                    slider(0.0..=30.0, props.toggler_spacing, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::TogglerSpacing(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.toggler_spacing)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Default active state
-            checkbox("Default Active State", props.toggler_active)
-                .on_toggle(move |v| {
-                    Message::PropertyChanged(widget_id, PropertyChange::TogglerActive(v))
-                }),
-            
-            // Size controls
-            row![
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-                
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-            ].spacing(15),
-        ]
-        .spacing(15)
-        .into()
-    }
-    
-    fn radio_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Radio Button Properties").size(16),
-
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Label text
-            column![
-                text("Label Text"),
-                text_input("Label", &props.radio_label)
-                    .on_input(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::RadioLabel(v))
-                    })
-                    .width(250),
-            ].spacing(5),
-            
-            // Radio button size
-            column![
-                text("Radio Size"),
-                row![
-                    slider(12.0..=40.0, props.radio_size, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::RadioSize(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.radio_size)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Spacing between radio and label
-            column![
-                text("Label Spacing"),
-                row![
-                    slider(0.0..=30.0, props.radio_spacing, move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::RadioSpacing(v))
-                    })
-                        .step(1.0)
-                        .width(200),
-                    text(format!("{:.0}px", props.radio_spacing)).size(12).width(50),
-                ].spacing(10).align_y(Alignment::Center),
-            ].spacing(5),
-            
-            // Options management - similar to picklist
-            column![
-                text("Radio Options"),
-                column(
-                    props.radio_options.iter().enumerate().map(|(i, option)| {
-                        row![
-                            text_input(&format!("Option {}", i + 1), option)
-                                .on_input({
-                                    let index = i;
-                                    let current_options = props.radio_options.clone();
-                                    move |v| {
-                                        let mut new_options = current_options.clone();
-                                        if index < new_options.len() {
-                                            new_options[index] = v;
-                                        }
-                                        Message::PropertyChanged(widget_id, PropertyChange::RadioOptions(new_options))
-                                    }
-                                })
-                                .width(200),
-                            button("Remove")
-                                .on_press({
-                                    let index = i;
-                                    let current_options = props.radio_options.clone();
-                                    let mut new_options = current_options;
-                                    if index < new_options.len() && new_options.len() > 1 {
-                                        new_options.remove(index);
-                                    }
-                                    Message::PropertyChanged(widget_id, PropertyChange::RadioOptions(new_options))
-                                })
-                                .style(button::danger)
-                                .padding(Padding::new(5.0)),
-                        ].spacing(10).align_y(Alignment::Center).into()
-                    }).collect::<Vec<Element<Message>>>()
-                ).spacing(5),
-                
-                button("Add Option")
-                    .on_press({
-                        let current_options = props.radio_options.clone();
-                        let mut new_options = current_options;
-                        new_options.push(format!("Option {}", new_options.len() + 1));
-                        Message::PropertyChanged(widget_id, PropertyChange::RadioOptions(new_options))
-                    })
-                    .style(button::success)
-                    .padding(Padding::new(5.0)),
-            ].spacing(10),
-            
-            // Default selected option
-            column![
-                text("Default Selection"),
-                pick_list(
-                    props.radio_options.clone(),
-                    props.radio_options.get(props.radio_selected_index).cloned(),
-                    move |selected_option| {
-                        // Find the index of the selected option
-                        let current_options = props.radio_options.clone();
-                        if let Some(index) = current_options.iter().position(|opt| opt == &selected_option) {
-                            Message::PropertyChanged(widget_id, PropertyChange::RadioSelectedIndex(index))
-                        } else {
-                            Message::PropertyChanged(widget_id, PropertyChange::RadioSelectedIndex(0))
-                        }
-                    },
-                ).width(200),
-            ].spacing(5),
-            
-            // Size controls
-            row![
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-                
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-            ].spacing(15),
-        ]
-        .spacing(15)
-        .into()
-    }
-    
-    fn picklist_controls(&self, widget_id: WidgetId) -> Element<Message> {
-        let widget = self.hierarchy.get_widget_by_id(widget_id).unwrap();
-        let props = &widget.properties;
-        
-        column![
-            text("Pick List Properties").size(16),
-
-            row![
-                //Widget's Name
-                column![
-                    text("Widget Name"),
-                    text_input("Name", &props.widget_name)
-                        .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-                ],
-
-                // Toggle Widget Bounds
-                checkbox("Show Widget Bounds", props.show_widget_bounds)
-                    .on_toggle(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::ShowWidgetBounds(v))
-                    }),
-            ].align_y(Alignment::Center),
-            
-            // Placeholder text
-            column![
-                text("Placeholder Text"),
-                text_input("Placeholder", &props.picklist_placeholder)
-                    .on_input(move |v| {
-                        Message::PropertyChanged(widget_id, PropertyChange::PickListPlaceholder(v))
-                    })
-                    .width(250),
-            ].spacing(5),
-            
-            // Options management - simplified approach
-            column![
-                text("Options"),
-                column(
-                    props.picklist_options.iter().enumerate().map(|(i, option)| {
-                        row![
-                            text_input(&format!("Option {}", i + 1), option)
-                                .on_input({
-                                    let index = i;
-                                    let current_options = props.picklist_options.clone();
-                                    move |v| {
-                                        let mut new_options = current_options.clone();
-                                        if index < new_options.len() {
-                                            new_options[index] = v;
-                                        }
-                                        Message::PropertyChanged(widget_id, PropertyChange::PickListOptions(new_options))
-                                    }
-                                })
-                                .width(200),
-                            button("Remove")
-                                .on_press({
-                                    let index = i;
-                                    let current_options = props.picklist_options.clone();
-                                    let mut new_options = current_options;
-                                    if index < new_options.len() {
-                                        new_options.remove(index);
-                                    }
-                                    Message::PropertyChanged(widget_id, PropertyChange::PickListOptions(new_options))
-                                })
-                                .style(button::danger)
-                                .padding(Padding::new(5.0)),
-                        ].spacing(10).align_y(Alignment::Center).into()
-                    }).collect::<Vec<Element<Message>>>()
-                ).spacing(5),
-                
-                button("Add Option")
-                    .on_press({
-                        let current_options = props.picklist_options.clone();
-                        let mut new_options = current_options;
-                        new_options.push(format!("Option {}", new_options.len() + 1));
-                        Message::PropertyChanged(widget_id, PropertyChange::PickListOptions(new_options))
-                    })
-                    .style(button::success)
-                    .padding(Padding::new(5.0)),
-            ].spacing(10),
-            
-            // Size controls
-            row![
-                column![
-                    text("Width"),
-                    text_input("Width", &length_to_string(props.width))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Width(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-                
-                column![
-                    text("Height"),
-                    text_input("Height", &length_to_string(props.height))
-                        .on_input(move |v| {
-                            let length = parse_length(&v);
-                            Message::PropertyChanged(widget_id, PropertyChange::Height(length))
-                        })
-                        .width(120),
-                ].spacing(5),
-            ].spacing(15),
-        ]
-        .spacing(15)
-        .into()
+    fn debug_print_widget(&self, widget: &Widget, depth: usize) {
+        println!("{}- {:?} (id: {:?}, children: {})", 
+            "  ".repeat(depth), 
+            widget.widget_type, 
+            widget.id,
+            widget.children.len()
+        );
+        for child in &widget.children {
+            self.debug_print_widget(child, depth + 1);
+        }
     }
 
     pub fn theme(&self, theme: Theme) -> Theme {
@@ -2148,12 +1340,23 @@ impl WidgetVisualizer {
 pub enum Message {
     // Tree Hierarchy
     TreeAction,
+    TreeMove { 
+        id: WidgetId, 
+        new_parent: WidgetId, 
+        new_index: usize 
+    },
+    TreeDrop {
+        dragged_id: WidgetId,
+        target_id: WidgetId,
+        position: DropPosition,
+    },
 
     // Widget Operations
     SelectWidget(WidgetId),
     DeleteWidget(WidgetId),
     AddChild(WidgetId, WidgetType),
     PropertyChanged(WidgetId, PropertyChange),
+    SwapKind(WidgetId),
 
     // Interactive widget messages
     ButtonPressed(WidgetId),
@@ -2168,6 +1371,8 @@ pub enum Message {
     ShowPaddingToggled(bool),
     ShowSpacingToggled(bool),
     ShowBordersToggled(bool),
+    Explain(WidgetId),
+    ExplainTimeout(WidgetId),
 
     // Theme, not sure I'm going to implement this with the theme builder in the same app
     ThemeChanged(Theme),
@@ -2246,11 +1451,12 @@ fn parse_length(value: &str) -> Length {
     }
 }
 
-fn length_to_string(length: Length) -> String {
+pub fn length_to_string(length: Length) -> String {
     match length {
         Length::Fill => "Fill".to_string(),
         Length::Shrink => "Shrink".to_string(),
         Length::Fixed(pixels) => format!("{}", pixels),
+        Length::FillPortion(p) => format!("FillPortion({p})"),
         _ => "Shrink".to_string(),
     }
 }
@@ -2263,7 +1469,7 @@ fn can_have_children(widget_type: &WidgetType) -> bool {
 }
 
 // Helper function to get widget type icon for tree display
-fn get_widget_icon(widget_type: WidgetType) -> &'static str {
+pub fn get_widget_icon(widget_type: WidgetType) -> &'static str {
     match widget_type {
         WidgetType::Container => "📦",
         WidgetType::Row => "↔️",
@@ -2285,7 +1491,7 @@ fn get_widget_icon(widget_type: WidgetType) -> &'static str {
 
 #[derive(Debug, Clone)]
 pub struct Properties {
-pub width: Length,
+    pub width: Length,
     pub height: Length,
     pub padding: Padding,
     
@@ -2342,7 +1548,11 @@ pub width: Length,
     
     // Progress properties
     pub progress_value: f32,
-    pub progress_height: f32,
+    pub progress_min: f32,
+    pub progress_max: f32,
+    pub progress_length: Length,
+    pub progress_girth: Length,
+    pub progress_vertical: bool,
     
     // Toggler properties
     pub toggler_active: bool,
@@ -2360,8 +1570,13 @@ pub width: Length,
     pub scrollable_width: f32,
     pub scrollable_height: f32,
 
+    // Rule properties
+    pub rule_orientation: RuleOrientation,
+    pub rule_thickness: f32,
+
     pub show_widget_bounds: bool,
     pub widget_name: String,
+    pub saved_height_before_scrollable: Option<Length>,
 }
 
 impl Default for Properties {
@@ -2428,8 +1643,12 @@ impl Default for Properties {
             slider_step: 1.0,
             
             // Progress defaults
+            progress_min: 0.0,
+            progress_max: 1.0,
             progress_value: 0.5,
-            progress_height: 10.0,
+            progress_length: Length::Fill,          // spans available width
+            progress_girth: Length::Fixed(10.0),    // 10px tall
+            progress_vertical: false,               // horizontal by default
             
             // Toggler defaults
             toggler_active: false,
@@ -2451,8 +1670,13 @@ impl Default for Properties {
             scrollable_width: 300.0,
             scrollable_height: 200.0,
 
+            // Rule defaults
+            rule_orientation: RuleOrientation::Horizontal,
+            rule_thickness: 5.0,
+
             show_widget_bounds: false,
             widget_name: String::new(),
+            saved_height_before_scrollable: None,
         }
     }
 }
@@ -2463,6 +1687,12 @@ impl Properties {
         
         // Customize defaults based on widget type
         match widget_type {
+            WidgetType::Column => {
+                props.show_widget_bounds = true;
+            }
+            WidgetType::Row => {
+                props.show_widget_bounds = true;
+            }
             WidgetType::Button => {
                 props.text_content = "Click Me!".to_string();
                 props.width = Length::Shrink;
@@ -2475,21 +1705,34 @@ impl Properties {
             }
             WidgetType::TextInput => {
                 props.text_input_placeholder = "Enter text...".to_string();
+                props.height = Length::Shrink;
             }
             WidgetType::Checkbox => {
                 props.checkbox_label = "Check me".to_string();
+                props.height = Length::Shrink;
+                props.width = Length::Shrink;
             }
             WidgetType::Radio => {
                 props.radio_options = vec![
                     "Radio Option 1".to_string(),
                     "Radio Option 2".to_string(),
                 ];
+                props.height = Length::Shrink;
+                props.width = Length::Shrink;
             }
             WidgetType::Toggler => {
                 props.toggler_label = "Toggle me".to_string();
+                props.height = Length::Shrink;
+                props.width = Length::Shrink;
             }
             WidgetType::PickList => {
                 props.picklist_placeholder = "Choose an option...".to_string();
+                props.height = Length::Shrink;
+                props.width = Length::Shrink;
+            }
+            WidgetType::Slider => {
+                props.height = Length::Shrink;
+                props.width = Length::Shrink;
             }
             _ => {} // Use defaults for other types
         }
@@ -2545,6 +1788,13 @@ impl std::fmt::Display for AlignmentOption {
     }
 }
 
+impl std::fmt::Display for RuleOrientation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { RuleOrientation::Horizontal => write!(f, "Horizontal"),
+                     RuleOrientation::Vertical   => write!(f, "Vertical"), }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AlignmentOption {
     Start,
@@ -2586,3 +1836,6 @@ pub enum ButtonStyleType { Primary, Secondary, Success, Danger, Text }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FontType { Default, Monospace }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleOrientation { Horizontal, Vertical }

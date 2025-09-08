@@ -202,7 +202,7 @@ where
     }
 
     fn layout(
-        &self, 
+        &mut self, 
         _tree: &mut Tree, 
         _renderer: &Renderer, 
         limits: &Limits
@@ -395,7 +395,7 @@ where
             .max_width(overlay_width - padding * 2.0);
 
         let content_layout = self.content
-            .as_widget()
+            .as_widget_mut()
             .layout(content_tree, renderer, &content_limits);
 
         Some(overlay::Element::new(Box::new(Overlay {
@@ -817,13 +817,21 @@ where
 
     fn overlay<'a>(
         &'a mut self,
-        _layout: Layout<'_>,
-        _renderer: &Renderer,
+        layout: Layout<'_>,
+        renderer: &Renderer,
     ) -> Option<overlay::Element<'a, Message, Theme, Renderer>> {
-        // Forward any nested overlays from the content - like float.rs
+        // Get the actual bounds of the overlay window
+        let bounds = layout.bounds();
+        
+        // Calculate the actual position of the content area
+        let content_offset = Vector::new(
+            bounds.x + 20.0,  // overlay position + content padding
+            bounds.y + 60.0,  // overlay position + header height + padding
+        );
+        
         let content_bounds = Rectangle {
-            x: 20.0,
-            y: 60.0,
+            x: content_offset.x,
+            y: content_offset.y,
             width: self.width - 40.0,
             height: self.height.unwrap_or(300.0) - 80.0,
         };
@@ -833,9 +841,9 @@ where
             self.content.as_widget_mut().overlay(
                 self.tree,
                 Layout::new(content_layout),
-                _renderer,
+                renderer,
                 &content_bounds,
-                Vector::new(20.0, 60.0),
+                content_offset,  // Pass the actual screen position
             )
         } else {
             None
