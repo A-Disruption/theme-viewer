@@ -3,6 +3,7 @@ use iced::window::Settings;
 use iced::advanced::graphics::core::window;
 use iced::widget::{button, checkbox, column, combo_box, container, horizontal_space, pick_list, progress_bar, radio, responsive, row, scrollable, slider, text, text_input, toggler, Action};
 use std::collections::BTreeMap;
+use widget_helper::panegrid_dashboard::{PaneDock, PaneMsg};
 
 mod widget;
 mod theme_helper;
@@ -21,6 +22,7 @@ struct ThemeViewer {
     windows: BTreeMap<window::Id, Window>,
     theme_builder: theme_helper::PaletteBuilder,
     widget_builder: widget_helper::WidgetVisualizer,
+    pane: Option<PaneDock>,
     themes: Vec<Theme>,
     theme: Option<Theme>,
     show_custom_theme_menu: bool,
@@ -61,6 +63,7 @@ enum Message {
     ThemeHelper(theme_helper::Message),
     // Widget Builder Messages
     WidgetHelper(widget_helper::Message),
+    Pane(PaneMsg),
 
     //window handles
     WindowClosed(iced::window::Id),
@@ -79,6 +82,7 @@ impl ThemeViewer {
             windows: BTreeMap::new(),
             theme_builder: theme_helper::PaletteBuilder::new(),
             widget_builder: widget_helper::WidgetVisualizer::new(),
+            pane: None,
             themes: themes,
             theme: Some(iced::theme::Theme::Dark),
             show_custom_theme_menu: false,
@@ -102,7 +106,7 @@ impl ThemeViewer {
     }
 
     fn theme(&self, _window_id: window::Id) -> Theme {
-        self.theme.clone().unwrap_or_default()
+        self.theme.clone().unwrap_or(Theme::Dark)
     }
 
     fn title(&self, window_id: window::Id) -> String {
@@ -134,7 +138,7 @@ impl ThemeViewer {
             }
             Message::ShowTreeExample => {
                 self.show_tree_example = !self.show_tree_example;
-                Task::none()
+                Task::done(Message::RequestOpenWindow(WindowEnum::WidgetVisualizer))
             }
             Message::ButtonPressed => {
                 println!("Button pressed!");
@@ -240,12 +244,25 @@ impl ThemeViewer {
                         });
                         return open.map(|id| Message::WindowOpened(id, WindowEnum::CustomBuilder))
                     }
+                    WindowEnum::WidgetVisualizer => {
+                        if self.windows.values().any(|w| w.windowtype == WindowEnum::WidgetVisualizer) {
+                            return Task::none()
+                        };
+
+                        let (_id, open) = iced::window::open(window::Settings {
+                            size: Size::new(1920_f32, 1080_f32),
+                            min_size: Some(Size::new(700_f32, 975_f32)),
+                            ..window::Settings::default()
+                        });
+                        return open.map(|id| Message::WindowOpened(id, WindowEnum::WidgetVisualizer))
+                    }
                 }
             },
             Message::WindowOpened(window_id, window_type) => {
                 let title = match window_type {
                     WindowEnum::Main => { String::from("Theme Viewer") }
                     WindowEnum::CustomBuilder => { String::from("Theme Builder") }
+                    WindowEnum::WidgetVisualizer => { String::from("UI Builder") }
                 };
 
                 let new_window = Window::new(window_id, title, window_type);
@@ -254,6 +271,12 @@ impl ThemeViewer {
 
                 Task::none()
             },
+            Message::Pane(m) => {
+                if let Some(dock) = &mut self.pane {
+                    return dock.update(m).map(Message::Pane);
+                }
+                Task::none()
+            }
         }
     }
 
@@ -488,7 +511,7 @@ impl ThemeViewer {
         let window_view = match self.windows.get(&window_id) {
             Some(window) => match window.windowtype {
                 WindowEnum::Main => {
-                    if !self.show_widget_builder && !self.show_tree_example {
+                    if !self.show_widget_builder /* && !self.show_tree_example */ {
                         main_window_content
                     }
                     else {
@@ -500,6 +523,15 @@ impl ThemeViewer {
                     container(
                         theme_helper::PaletteBuilder::view(&self.theme_builder).map(Message::ThemeHelper),
                     ).into()
+                }
+                WindowEnum::WidgetVisualizer => {
+                    if let Some(pane) = &self.pane {
+                        if pane.owns_window(window_id) {
+                            return pane.view(window_id).map(Message::Pane);
+                        }
+                    }
+
+                    self.widget_builder.view().map(Message::WidgetHelper)
                 }
             }
             None => { 
@@ -516,8 +548,15 @@ impl ThemeViewer {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        event::listen_with(handle_event)
-    }
+        Subscription::batch(vec![
+            self.pane
+                .as_ref()
+                .map(|p| p.subscription().map(Message::Pane))
+                .unwrap_or(iced::Subscription::none()),
+
+            event::listen_with(handle_event),
+        ])
+    }   
 }
 
 
@@ -566,6 +605,7 @@ pub enum WindowEnum {
     #[default]
     Main,
     CustomBuilder,
+    WidgetVisualizer
 }
 
 #[derive(Debug, Clone,)]

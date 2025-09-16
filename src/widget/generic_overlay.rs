@@ -161,6 +161,7 @@ struct State {
     position: Point,
     is_dragging: bool,
     drag_offset: Vector,
+    window_size: Size,
 }
 
 impl Default for State {
@@ -170,6 +171,7 @@ impl Default for State {
             position: Point::new(0.0, 0.0),
             is_dragging: false,
             drag_offset: Vector::new(0.0, 0.0),
+            window_size: Size::new(0.0, 0.0),
         }
     }
 }
@@ -280,20 +282,17 @@ where
     ) {
         let state = tree.state.downcast_mut::<State>();
 
-        if state.is_open {
-            return;
+        match event {
+            Event::Window(iced::window::Event::Opened { size, .. })
+            | Event::Window(iced::window::Event::Resized(size)) => {
+                state.window_size = Size::new(size.width, size.height);
+                // No need to invalidate layout unless your layout depends on it while open
+            }
+            _ => {}
         }
 
+
         match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                if cursor.is_over(layout.bounds()) {
-                    self.status = Some(button::Status::Pressed);
-                    self.is_pressed = true;
-                    state.is_open = true;
-                    shell.invalidate_layout();
-                }
-            }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerLifted { .. }) => {
                 if self.is_pressed {
@@ -310,6 +309,24 @@ where
                     shell.invalidate_layout();
                 }
             }
+            _ => {}
+        }
+
+        if state.is_open {
+            return;
+        }
+
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(touch::Event::FingerPressed { .. }) => {
+                if cursor.is_over(layout.bounds()) {
+                    self.status = Some(button::Status::Pressed);
+                    self.is_pressed = true;
+                    state.is_open = true;
+                    shell.invalidate_layout();
+                }
+            }
+
             Event::Window(iced::window::Event::Opened { position: _, size }) => {
                 let window_size = Rectangle {
                     x: 0.0,
@@ -373,15 +390,31 @@ where
         if state.position == Point::ORIGIN {
             let overlay_width = self.overlay_width.unwrap_or(400.0);
             let overlay_height = self.overlay_height.unwrap_or(300.0);
+            let window = state.window_size;
 
-            let viewport_width = self.window_size.unwrap_or(viewport.clone()).width;
-            let viewport_height = self.window_size.unwrap_or(viewport.clone()).height;
+            // Fallback if we haven't seen a window event yet
+            let (window_width, window_height) = if window.width > 0.0 && window.height > 0.0 {
+                (window.width, window.height)
+            } else {
+                // Default if no window events yet
+                (800.0, 800.0)
+            };
 
             state.position = Point::new(
-                (viewport_width - overlay_width) / 2.0 + offset.x,
-                (viewport_height - overlay_height) / 2.0 + offset.y,
+                (window_width - overlay_width) / 2.0 + offset.x,
+                (window_height - overlay_height) / 2.0 + offset.y,
             );
         }
+
+        let fullscreen = {
+            let win = state.window_size;
+            if win.width > 0.0 && win.height > 0.0 {
+                Rectangle::new(Point::ORIGIN, win)
+            } else {
+                // defensive fallback
+                Rectangle::new(Point::ORIGIN, Size::new(99999.0, 99999.0))
+            }
+        };
 
         let content_tree = &mut tree.children[0];
 
@@ -389,10 +422,13 @@ where
         let header_height = 50.0;
         let padding = 20.0;
         let overlay_width = self.overlay_width.unwrap_or(400.0);
+        let overlay_height = self.overlay_height.unwrap_or(300.0);
+        let overlay_size = Size::new(
+                overlay_width - padding * 2.0, 
+                overlay_height + header_height - padding * 2.0
+            );
         
-        let content_limits = Limits::new(Size::ZERO, viewport.size())
-            .width(overlay_width - padding * 2.0)
-            .max_width(overlay_width - padding * 2.0);
+        let content_limits = Limits::new(Size::ZERO, overlay_size);
 
         let content_layout = self.content
             .as_widget_mut()
@@ -406,7 +442,7 @@ where
             tree: content_tree,
             width: self.overlay_width.unwrap_or(400.0),
             height: self.overlay_height,
-            viewport: self.window_size.unwrap_or(*viewport),
+            viewport: fullscreen,
             on_close: self.on_close.as_deref(),
             content_layout: Some(content_layout),
         })))

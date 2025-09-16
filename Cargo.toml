@@ -10,7 +10,10 @@ iced = { version = "0.14.0-dev", features = [
     "advanced",
     "debug",
     "canvas",
+    "image",
+    "svg"
 ] }
+iced_runtime = { version = "0.14.0-dev" }
 arboard = { version="3.6.0" }
 widgets = { git = "https://github.com/A-Disruption/widgets.git"}
 
@@ -20,3 +23,4 @@ iced_fontello = "0.13"
 
 [patch.crates-io]
 iced = { git = "https://github.com/iced-rs/iced", branch = "master" }
+iced_runtime = { git = "https://github.com/iced-rs/iced", branch = "master"}
