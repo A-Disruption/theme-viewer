@@ -5,6 +5,7 @@ use iced::widget::{button, checkbox, column, combo_box, container, horizontal_sp
 use std::collections::BTreeMap;
 use widget_helper::panegrid_dashboard::{PaneDock, PaneMsg};
 
+mod icon;
 mod widget;
 mod theme_helper;
 mod widget_helper;
@@ -14,6 +15,7 @@ fn main() {
         .title(ThemeViewer::title)
         .theme(ThemeViewer::theme)
         .subscription(ThemeViewer::subscription)
+        .font(icon::FONT)
         .run()
         .unwrap()
 }

@@ -98,6 +98,7 @@ pub struct CodeGenerator<'a> {
     indent_level: usize,
     tokens: Vec<Token>,
     app_name: String,
+    app_window_title: String,
     widget_counts: HashMap<String, usize>,  // Track duplicate widgets
     used_widgets: HashSet<&'static str>,  // Track which widgets are used for the impl code gen
     widget_names: HashMap<WidgetId, String>,
@@ -111,6 +112,7 @@ impl<'a> CodeGenerator<'a> {
             indent_level: 0,
             tokens: Vec::new(),
             app_name: "App".to_string(),
+            app_window_title: "App Window".to_string(),
             widget_counts: HashMap::new(),
             used_widgets: HashSet::new(),
             widget_names: HashMap::new(),
@@ -121,6 +123,18 @@ impl<'a> CodeGenerator<'a> {
     /// Set App name for code generation
     pub fn set_app_name(&mut self, name: String) {
         self.app_name = if name.trim().is_empty() { 
+            "App".to_string() 
+        } else { 
+            // Ensure it's a valid Rust identifier
+            name.chars()
+                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                .collect::<String>()
+        };
+    }
+
+    /// Set Window Title for code generation
+    pub fn set_window_title(&mut self, name: String) {
+        self.app_window_title = if name.trim().is_empty() { 
             "App".to_string() 
         } else { 
             // Ensure it's a valid Rust identifier
@@ -344,7 +358,7 @@ impl<'a> CodeGenerator<'a> {
         self.add_operator("::");
         self.add_function("from");
         self.add_plain("(");
-        self.add_string(&format!("\"{}\"", self.app_name));
+        self.add_string(&format!("\"{}\"", self.app_window_title));
         self.add_plain(")");
         self.add_newline();
         
@@ -2642,6 +2656,7 @@ pub fn build_code_view_with_height<'a>(
     container(
         scrollable(
             container(content)
+                .width(Length::Fill)
                 .padding(15)
                 .style(move |_| container::Style {
                     background: Some(Background::Color(bg_color)),
@@ -2654,9 +2669,11 @@ pub fn build_code_view_with_height<'a>(
                 })
         )
         .width(Length::Fill)
-        .height(Length::Fixed(height))
+        .height(Length::Fill)
+//        .height(Length::Fixed(height))
     )
     .width(Length::Fill)
+    .height(Length::Fill)
     .into()
 }
 

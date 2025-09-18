@@ -274,6 +274,7 @@ pub fn row_controls(h: &WidgetHierarchy, widget_id: WidgetId, theme: Theme) -> E
         ]
         .spacing(15),
     ]
+    .padding(10)
     .into();
 
     scrollable(add_code_preview(content, h, widget_id, theme)).into()
@@ -1870,6 +1871,5 @@ pub fn add_code_preview<'a>(content: Element<'a, Message>, hierarchy: &'a Widget
             build_code_view_with_height(&tokens, 200.0, theme),
         ].spacing(5)
     ]
-    .spacing(0)
     .into()
 }

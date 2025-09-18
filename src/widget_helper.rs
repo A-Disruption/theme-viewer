@@ -13,6 +13,7 @@ pub mod panegrid_dashboard;
 use code_generator::{CodeGenerator, build_code_view, build_code_view_with_height};
 use widgets::tree::{tree_handle, branch, DropInfo, DropPosition, Branch};
 use iced::widget::themer;
+use crate::icon;
 
 // ============================================================================
 // CORE DATA STRUCTURES - Simplified ID-based approach
@@ -269,6 +270,7 @@ pub struct WidgetHierarchy {
     root: Widget,
     selected_ids: HashSet<WidgetId>,
     next_id: usize,
+
 }
 
 impl WidgetHierarchy {
@@ -863,6 +865,12 @@ pub struct WidgetVisualizer {
     hierarchy: WidgetHierarchy,
     theme: Theme,
     app_name: String,
+    app_window_title: String,
+    multiple_windows: bool,
+    highlight_selected: bool,
+    left_pane: LeftPane,
+    right_pane: RightPane,
+
 }
 
 impl Default for WidgetVisualizer {
@@ -872,6 +880,11 @@ impl Default for WidgetVisualizer {
             hierarchy,
             theme: Theme::Light,
             app_name: "App".to_string(),
+            app_window_title: String::new(),
+            multiple_windows: false,
+            highlight_selected: true,
+            left_pane: LeftPane::Home,
+            right_pane: RightPane::Preview
         }
     }
 }
@@ -1008,15 +1021,12 @@ impl WidgetVisualizer {
             }
             
             Message::CopyCode(code) => {
-                println!("Copying to clipboard:\n{}", code);
-                
-                // If you have arboard dependency, you can do:
                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
                     let _ = clipboard.set_text(code);
                 }
             }
             
-            // Visual helpers
+
             Message::ThemeChanged(theme) => {
                 self.theme = theme;
             }
@@ -1028,19 +1038,67 @@ impl WidgetVisualizer {
             Message::ToggleRadioLayout => { // To switch between column/row for radio widget code generation
 
             }
+            Message::OpenHome => {
+                // Should Open / Focus the Home Page
+                self.left_pane = LeftPane::Home;
+            }
+            Message::OpenPreview => {
+                // Should Open / Focus the Editor Page
+                self.right_pane = RightPane::Preview
+            }
+            Message::OpenCodeView => {
+                // Should Open / Focus the 'Full App' code Page
+                self.right_pane = RightPane::Code
+            }
+            Message::OpenThemeEditor => {
+                // Should Open / Focus a Theme Editor Page
+                self.left_pane = LeftPane::Themes;
+            }
+            Message::OpenWidgetVisualizerSettings => {
+                // Should Open / Focus the Settings Page
+                self.left_pane = LeftPane::Settings;
+            }
+
+            //Settings
+            Message::AppWindowTitleChanged(value) => {
+                self.app_window_title = value;
+            }
+            Message::AppStructName2Changed(value) => {
+                self.app_name = value;
+            }
+            Message::MultipleWindowsToggled(checked) => {
+                self.multiple_windows = checked;
+            }
+            Message::OutlineSelectedWidgetsToggled(b) => {
+                self.highlight_selected = b;
+            }
         }
         
         Action::None
     }
     
     pub fn view(&self) -> Element<Message> {
-        let left_panel = self.build_left_panel();
-        let right_panel = self.build_preview_panel();
+        let pane_selection_dock = self.build_pane_selection_dock();
+        let left_panel = match self.left_pane {
+            LeftPane::Home => self.build_left_panel(),
+            LeftPane::Settings => self.build_settings(),
+            LeftPane::Themes => self.build_left_panel(), // need to build out the Themese view
+            
+        };
+
+        let right_panel = match self.right_pane {
+            RightPane::Preview => self.build_preview_panel(),
+            RightPane::Code => self.build_full_code_content(),
+        };
         
-        row![left_panel, right_panel].into()
+        row![
+            pane_selection_dock, 
+            left_panel, 
+            right_panel
+        ].into()
     }
     
-    fn build_left_panel(&self) -> Element<Message> {
+    fn build_left_panel<'a>(&'a self) -> Element<'a, Message> {
         column![
             // Header
             column![
@@ -1084,7 +1142,95 @@ impl WidgetVisualizer {
             }
         ]
         .width(Length::Fixed(400.0))
-        .padding(10)
+        .padding(
+            Padding {
+                top: 10.0,
+                right: 0.0,
+                left: 0.0,
+                bottom: 10.0,
+            }
+        )
+        .into()
+    }
+
+    fn build_pane_selection_dock<'a>(&self) -> Element<'a, Message> {
+        container(
+//            row![
+                column![
+                    button(icon::home().center())
+                        .width(35)
+                        .style(
+                            if self.left_pane == LeftPane::Home {
+                                styles::button::selected_text
+                            } else {
+                                button::text
+                            }
+                        )
+                        .on_press(Message::OpenHome),
+                    horizontal_rule(1).style(styles::rule::toolbar_rule),
+
+                    button(icon::global().center())
+                        .width(35)
+                        .style(
+                            if self.left_pane == LeftPane::Settings {
+                                styles::button::selected_text
+                            } else {
+                                button::text
+                            }
+                        )
+                        .on_press(Message::OpenWidgetVisualizerSettings),
+                    horizontal_rule(1).style(styles::rule::toolbar_rule),
+
+                    button(icon::theme().center())
+                        .width(35)
+                        .style(
+                            if self.left_pane == LeftPane::Themes {
+                                styles::button::selected_text
+                            } else {
+                                button::text
+                            }
+                        )
+                        .on_press(Message::OpenThemeEditor),
+                    horizontal_rule(2).style(styles::rule::toolbar_rule),
+                    
+                    button(icon::preview().center())
+                        .width(35)
+                        .style(
+                            if self.right_pane == RightPane::Preview {
+                                styles::button::selected_text
+                            } else {
+                                button::text
+                            }
+                        )
+                        .on_press(Message::OpenPreview),
+                    horizontal_rule(1).style(styles::rule::toolbar_rule),
+
+                    button(icon::code().center())
+                        .width(35)
+                        .style(
+                            if self.right_pane == RightPane::Code {
+                                styles::button::selected_text
+                            } else {
+                                button::text
+                            }
+                        )
+                        .on_press(Message::OpenCodeView),
+
+                ]
+                .spacing(2.5)
+                .width(Length::Fixed(45.0))
+                .padding(
+                    Padding {
+                        top: 10.0,
+                        right: 5.0,
+                        bottom: 5.0,
+                        left: 5.0,
+                    }
+                )
+//            ]
+//            .align_y(Alignment::Center)
+//            .padding(5)
+        )
         .into()
     }
 
@@ -1097,11 +1243,11 @@ impl WidgetVisualizer {
         let overlay_content = self.build_editor_for_widget(widget, widget.id);
 
         // Determine if this widget can be swapped and the button label
-        let swap_label: Option<&'static str> = match widget.widget_type {
-            WidgetType::Row        => Some("⇄"),
-            WidgetType::Column     => Some("⇄"),
-            WidgetType::Container  => Some("⇄"),
-            WidgetType::Scrollable => Some("⇄"),
+        let swap_label: Option<iced::advanced::widget::Text<'_, Theme, iced::Renderer>> = match widget.widget_type {
+            WidgetType::Row        => Some(icon::swap()), 
+            WidgetType::Column     => Some(icon::swap()),
+            WidgetType::Container  => Some(icon::swap()),
+            WidgetType::Scrollable => Some(icon::swap()),
             _ => None,
         };
 
@@ -1113,7 +1259,13 @@ impl WidgetVisualizer {
                 .into()
         });
 
-        let place_holder = button("  ").style(button::text);
+        let disabled_delete_button: Element<Message> = { // Don't allow deleting root
+                    button(icon::trash())
+                        .style(styles::button::cancel)
+                        .into()
+                };
+
+        //let place_holder = button("  ").style(button::text);
 
         let mut children = Vec::new();
 
@@ -1137,7 +1289,8 @@ impl WidgetVisualizer {
                 .overlay_height(750.0)
                 .style(button::primary),
 
-                place_holder
+                disabled_delete_button
+                //place_holder
 
             ].spacing(5)
         ).block_dragging()
@@ -1166,11 +1319,11 @@ impl WidgetVisualizer {
         let overlay_content = self.build_editor_for_widget(widget, widget.id);
         
         // Determine if this widget can be swapped and the button label
-        let swap_label: Option<&'static str> = match widget.widget_type {
-            WidgetType::Row        => Some("⇄"),
-            WidgetType::Column     => Some("⇄"),
-            WidgetType::Container  => Some("⇄"),
-            WidgetType::Scrollable => Some("⇄"),
+        let swap_label: Option<iced::advanced::widget::Text<'_, Theme, iced::Renderer>> = match widget.widget_type {
+            WidgetType::Row        => Some(icon::swap()), 
+            WidgetType::Column     => Some(icon::swap()),
+            WidgetType::Container  => Some(icon::swap()),
+            WidgetType::Scrollable => Some(icon::swap()),
             _ => None,
         };
 
@@ -1183,9 +1336,9 @@ impl WidgetVisualizer {
         });
 
         let delete_button: Option<Element<Message>> = if widget.id.0 != 0 { // Don't allow deleting root
-                    Some(button(text("x").center())
+                    Some(button(icon::trash())
                         .on_press(Message::DeleteWidget(widget.id))
-                        .style(styles::cancel)
+                        .style(styles::button::cancel)
                         .into())
                 } else {
                     None
@@ -1402,9 +1555,6 @@ impl WidgetVisualizer {
     fn build_preview_panel(&self) -> Element<Message> {
         let widget_preview = self.build_widget_preview(self.hierarchy.root());
 
-        // Build the full code view for the overlay
-        let full_code_content = self.build_full_code_content();
-
         let preview_scoped = themer(
             {
                 let t = self.theme.clone();
@@ -1427,30 +1577,34 @@ impl WidgetVisualizer {
         // Optional: set default text color / background for this scope:
         .text_color(|th| th.palette().text)
         .background(|th| Background::Color(th.palette().background));
+
+        self.theme.extended_palette().secondary.base.text;
         
         column![
             row![
-                text("Preview").size(20),
-                text("This represents your app's main content container")
-                    .size(12)
-                    .color(Color::from_rgb(0.6, 0.6, 0.6))
-                    .center(),
-
-                horizontal_space(),
-
-                overlay_button(
-                    "App Code",
-                    "Generated Iced Application Code",
-                    full_code_content
-                )
-                .overlay_width(1000.0)
-                .overlay_height(800.0)
-                .style(button::primary),
-
+                tooltip(
+                    text("Preview").size(20),
+                    text("This represents your app's main content container")
+                        .size(12)
+                        .color(Color::from_rgb(0.6, 0.6, 0.6))
+                        .center(),
+                    tooltip::Position::Right
+                ),
             ]
             .align_y(Alignment::Center)
-            .spacing(15),
+            .padding(
+                Padding {
+                    top: 5.0,
+                    right: 10.0,
+                    bottom: 0.0,
+                    left: 10.0,
+                }
+            )
+            .spacing(20),
+
             horizontal_rule(5),
+            Space::new(Length::Fill, 10),
+
             container(preview_scoped)
             .padding(5)
             .style(|theme: &Theme| container::Style {
@@ -1867,7 +2021,7 @@ impl WidgetVisualizer {
         };
 
         // Apply selection highlight (without padding to preserve dimensions)
-        if is_selected {
+        if is_selected && self.highlight_selected {
             container(content)
                 .style(move |theme: &Theme| {
                     let c = theme.extended_palette().primary.strong.color;
@@ -1921,32 +2075,56 @@ impl WidgetVisualizer {
         .into()
     }
 
-    fn build_full_code_view(&self) -> Element<Message> {
-        let mut generator = CodeGenerator::new(&self.hierarchy, self.theme.clone());
-        let tokens = generator.generate_app_code();
-        
-        column![
-            row![
-                text("Complete Application Code").size(20),
-                horizontal_space(),
-                button("Copy to Clipboard")
-                    .on_press(Message::CopyCode(
-                        tokens.iter().map(|t| t.text.clone()).collect::<String>()
-                    ))
-                    .style(button::primary),
+    fn build_settings(&self) -> Element<Message> {
+        container(
+            column![
+                // Header
+                column![
+                    text("Global Settings and Defaults").size(24).center(),
+                    horizontal_rule(5),
+                ].spacing(10).align_x(Alignment::Center),
+                Space::new(Length::Fill, 10),
+
+
+                column![
+                    text("App Window Title"),
+                    text_input("Generated UI", &self.app_window_title)
+                        .on_input(Message::AppWindowTitleChanged)
+                ]
+                    .spacing(5),
+                column![
+                    text("App Struct Name"),
+                    text_input("App", &self.app_name)
+                        .on_input(Message::AppStructName2Changed)
+                ],
+                column![
+                    checkbox("Multi-Windowed App", self.multiple_windows)
+                        .on_toggle(Message::MultipleWindowsToggled)
+                ],
+                column![
+                    checkbox("Highlight Selected Widgets", self.highlight_selected)
+                        .on_toggle(Message::OutlineSelectedWidgetsToggled)
+                ]
             ]
-            .align_y(Alignment::Center),
-            horizontal_rule(5),
-            build_code_view(&tokens, self.theme.clone()),
-        ]
-        .spacing(10)
-        .padding(20)
+                .spacing(16)
+        )
+        .width(Length::Fixed(400.0))
+        .padding(
+            Padding {
+                top: 10.0,
+                right: 5.0,
+                left: 5.0,
+                bottom: 10.0,
+            }
+        )
         .into()
+
     }
 
     fn build_full_code_content(&self) -> Element<Message> {
         let mut generator = CodeGenerator::new(&self.hierarchy, self.theme.clone());
         generator.set_app_name(self.app_name.clone());
+        generator.set_window_title(self.app_window_title.clone());
         let tokens = generator.generate_app_code();
         
         // Create the full code string for copying
@@ -1957,22 +2135,24 @@ impl WidgetVisualizer {
             row![
                 text("Complete Iced Application Code").size(20),
                 horizontal_space(),
-                text("App Name:").size(14),
-                text_input("App", &self.app_name)
-                    .on_input(Message::AppNameChanged)
-                    .width(Length::Fixed(150.0)),
-                column![
-                    button("📋 Copy to Clipboard")
-                        .on_press(Message::CopyCode(code_string.clone()))
-                        .style(button::primary),
+                tooltip(
+                    button(icon::copy())
+                        .style(button::text)
+                        .on_press(Message::CopyCode(code_string.clone())),
                     text("Copy and paste into your main.rs")
-                        .size(12)
-                        .color(Color::from_rgb(0.6, 0.6, 0.6)),
-                ]
-                .spacing(5)
-                .align_x(Alignment::End),
+                        .size(12),
+                        tooltip::Position::Left
+                ),
             ]
             .align_y(Alignment::Center)
+            .padding(
+                Padding {
+                    top: 0.0,
+                    right: 10.0,
+                    bottom: 0.0,
+                    left: 10.0,
+                }
+            )
             .spacing(20),
             
             horizontal_rule(5),
@@ -1989,7 +2169,7 @@ impl WidgetVisualizer {
             .height(Length::Fill),
         ]
         .spacing(10)
-        .padding(20)
+        .padding(10)
         .into()
     }
 
@@ -2039,6 +2219,19 @@ pub enum Message {
     CopyCode(String),
     AppNameChanged(String),
     ToggleRadioLayout,
+
+    // Pane Selection Menu
+    OpenHome,
+    OpenPreview,
+    OpenCodeView,
+    OpenThemeEditor,
+    OpenWidgetVisualizerSettings,
+
+    // Settings
+    AppWindowTitleChanged(String),
+    AppStructName2Changed(String),
+    MultipleWindowsToggled(bool),
+    OutlineSelectedWidgetsToggled(bool),
 }
 
 pub enum Action {
@@ -2092,6 +2285,19 @@ pub enum WidgetType {
     Image,
     Svg,
     Tooltip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeftPane {
+    Home,
+    Settings,
+    Themes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RightPane {
+    Preview,
+    Code
 }
 
 // ============================================================================
