@@ -2085,18 +2085,24 @@ impl WidgetVisualizer {
                 ].spacing(10).align_x(Alignment::Center),
                 Space::new(Length::Fill, 10),
 
-
-                column![
-                    text("App Window Title"),
-                    text_input("Generated UI", &self.app_window_title)
-                        .on_input(Message::AppWindowTitleChanged)
+                row![
+                    column![
+                        text("App Window Title"),
+                        text_input("Generated UI", &self.app_window_title)
+                            .on_input(Message::AppWindowTitleChanged)
+                    ]
+                    .spacing(5)
+                    .padding(5),
+                    column![
+                        text("App Struct Name"),
+                        text_input("App", &self.app_name)
+                            .on_input(Message::AppStructName2Changed)
+                    ]
+                    .spacing(5)
+                    .padding(5),
                 ]
-                    .spacing(5),
-                column![
-                    text("App Struct Name"),
-                    text_input("App", &self.app_name)
-                        .on_input(Message::AppStructName2Changed)
-                ],
+                .padding(5),
+
                 column![
                     checkbox("Multi-Windowed App", self.multiple_windows)
                         .on_toggle(Message::MultipleWindowsToggled)
