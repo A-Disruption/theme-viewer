@@ -4,7 +4,7 @@ use iced::{
     }, Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow, Theme, Vector, ContentFit
 };
 use std::collections::HashSet;
-use crate::widget::generic_overlay::overlay_button;
+use crate::{widget::generic_overlay::overlay_button, widget_helper::styles::stylefn_builders};
 mod controls;
 use controls::*;
 mod styles;
@@ -870,6 +870,7 @@ pub struct WidgetVisualizer {
     highlight_selected: bool,
     left_pane: LeftPane,
     right_pane: RightPane,
+    custom_themes: stylefn_builders::CustomThemes,
 
 }
 
@@ -884,7 +885,8 @@ impl Default for WidgetVisualizer {
             multiple_windows: false,
             highlight_selected: true,
             left_pane: LeftPane::Home,
-            right_pane: RightPane::Preview
+            right_pane: RightPane::Preview,
+            custom_themes: stylefn_builders::CustomThemes::new(&Theme::Light),
         }
     }
 }
@@ -1028,6 +1030,7 @@ impl WidgetVisualizer {
             
 
             Message::ThemeChanged(theme) => {
+                self.custom_themes.theme = theme.clone();
                 self.theme = theme;
             }
 
@@ -1072,6 +1075,11 @@ impl WidgetVisualizer {
             Message::OutlineSelectedWidgetsToggled(b) => {
                 self.highlight_selected = b;
             }
+
+            Message::ForwardThemeMessages(msg) => {
+                let task = self.custom_themes.update(msg);
+                return Action::Run(task.map(Message::ForwardThemeMessages));
+            }
         }
         
         Action::None
@@ -1082,7 +1090,7 @@ impl WidgetVisualizer {
         let left_panel = match self.left_pane {
             LeftPane::Home => self.build_left_panel(),
             LeftPane::Settings => self.build_settings(),
-            LeftPane::Themes => self.build_left_panel(), // need to build out the Themese view
+            LeftPane::Themes => self.custom_themes.view().map(Message::ForwardThemeMessages),
             
         };
 
@@ -1145,8 +1153,8 @@ impl WidgetVisualizer {
         .padding(
             Padding {
                 top: 10.0,
-                right: 0.0,
-                left: 0.0,
+                right: 5.0,
+                left: 5.0,
                 bottom: 10.0,
             }
         )
@@ -1583,7 +1591,7 @@ impl WidgetVisualizer {
         column![
             row![
                 tooltip(
-                    text("Preview").size(20),
+                    text("Preview Layout").size(20),
                     text("This represents your app's main content container")
                         .size(12)
                         .color(Color::from_rgb(0.6, 0.6, 0.6))
@@ -2164,10 +2172,9 @@ impl WidgetVisualizer {
             horizontal_rule(5),
             Space::new(Length::Fill, 10),
             
-            // Code view with better height for overlay
             container(
                 scrollable(
-                    build_code_view_with_height(&tokens, 550.0, self.theme.clone())
+                    build_code_view_with_height(&tokens, 0.0, self.theme.clone()) // 0.0 height == Length::Fill
                 )
                 .width(Length::Fill)
             )
@@ -2238,6 +2245,9 @@ pub enum Message {
     AppStructName2Changed(String),
     MultipleWindowsToggled(bool),
     OutlineSelectedWidgetsToggled(bool),
+
+    //Send Messages to Stylefn_Builder
+    ForwardThemeMessages(stylefn_builders::Message)
 }
 
 pub enum Action {

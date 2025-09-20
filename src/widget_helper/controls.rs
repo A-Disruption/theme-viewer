@@ -1,7 +1,7 @@
 // controls.rs
 use iced::{
     widget::{
-        button, checkbox, column, pick_list, radio, row, scrollable, slider, text, text_input, vertical_space, Space, horizontal_rule
+        button, checkbox, column, pick_list, radio, row, scrollable, slider, text, text_input, vertical_space, Space, horizontal_rule, horizontal_space, container,
     }, Alignment, Color, Element, Length, Padding, Theme
 };
 use crate::widget_helper::{
@@ -18,11 +18,11 @@ pub fn container_controls(h: &WidgetHierarchy, widget_id: WidgetId, theme: Theme
         text("Container Properties").size(16),
 
         // Widget Name
-        column![
+        row![
             text("Widget Name"),
             text_input("Name", &props.widget_name)
                 .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ],
+        ].align_y(Alignment::Center),
 
         // Alignment
         row![
@@ -1868,8 +1868,9 @@ pub fn add_code_preview<'a>(content: Element<'a, Message>, hierarchy: &'a Widget
             vertical_space().height(10),
             text("Generated Code").size(16),
             // Use a reasonable height for widget-specific code
-            build_code_view_with_height(&tokens, 200.0, theme),
-        ].spacing(5)
+            build_code_view_with_height(&tokens, 400.0, theme),
+        ].spacing(5).padding(10)
     ]
+    .padding(10)
     .into()
 }

@@ -41,6 +41,8 @@ impl TokenType {
 
 impl TokenType {
     pub fn color_for_theme(&self, theme: &Theme) -> Color {
+        let palette = theme.extended_palette();
+
         match theme {
             Theme::Light => match self {
                 TokenType::Keyword => Color::from_rgb8(0, 0, 255),         // Blue (like VSCode)
@@ -69,16 +71,16 @@ impl TokenType {
             _ => {
                 // Default/custom theme colors
                 match self {
-                    TokenType::Keyword => Color::from_rgb8(86, 156, 214),
-                    TokenType::Type => Color::from_rgb8(78, 201, 176),
-                    TokenType::Function => Color::from_rgb8(220, 220, 170),
-                    TokenType::String => Color::from_rgb8(206, 145, 120),
-                    TokenType::Number => Color::from_rgb8(181, 206, 168),
-                    TokenType::Comment => Color::from_rgb8(106, 153, 85),
-                    TokenType::Operator => Color::from_rgb8(212, 212, 212),
-                    TokenType::Identifier => Color::from_rgb8(156, 220, 254),
-                    TokenType::Macro => Color::from_rgb8(197, 134, 192),
-                    TokenType::Plain => Color::from_rgb8(212, 212, 212),
+                    TokenType::Keyword => palette.danger.base.color,
+                    TokenType::Type => palette.primary.strong.color,
+                    TokenType::Function => palette.warning.weak.color,
+                    TokenType::String => palette.warning.base.color,
+                    TokenType::Number => palette.primary.weak.color,
+                    TokenType::Comment => palette.success.weak.color,
+                    TokenType::Operator => palette.danger.weak.color,
+                    TokenType::Identifier => palette.primary.base.color,
+                    TokenType::Macro => palette.success.base.color,
+                    TokenType::Plain => palette.secondary.base.color,
                 }
             }
         }
@@ -90,6 +92,201 @@ impl TokenType {
 pub struct Token {
     pub text: String,
     pub token_type: TokenType,
+}
+
+/// Helper struct for building token streams with proper syntax highlighting
+pub struct TokenBuilder {
+    tokens: Vec<Token>,
+    indent_level: usize,
+}
+
+impl TokenBuilder {
+    pub fn new() -> Self {
+        Self {
+            tokens: Vec::new(),
+            indent_level: 0,
+        }
+    }
+
+    pub fn into_tokens(self) -> Vec<Token> {
+        self.tokens
+    }
+
+    pub fn set_indent(&mut self, level: usize) {
+        self.indent_level = level;
+    }
+
+    pub fn increase_indent(&mut self) {
+        self.indent_level += 1;
+    }
+
+    pub fn decrease_indent(&mut self) {
+        if self.indent_level > 0 {
+            self.indent_level -= 1;
+        }
+    }
+
+    pub fn add_keyword(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Keyword,
+        });
+    }
+
+    pub fn add_type(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Type,
+        });
+    }
+
+    pub fn add_function(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Function,
+        });
+    }
+
+    pub fn add_number(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Number,
+        });
+    }
+
+    pub fn add_plain(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Plain,
+        });
+    }
+
+    pub fn add_operator(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Operator,
+        });
+    }
+
+    pub fn add_identifier(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Identifier,
+        });
+    }
+
+    pub fn add_string(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::String,
+        });
+    }
+
+    pub fn add_comment(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Comment,
+        });
+    }
+
+    pub fn add_macro(&mut self, text: &str) {
+        self.tokens.push(Token {
+            text: text.to_string(),
+            token_type: TokenType::Macro,
+        });
+    }
+
+    pub fn add_newline(&mut self) {
+        self.tokens.push(Token {
+            text: "\n".to_string(),
+            token_type: TokenType::Plain,
+        });
+    }
+
+    pub fn add_indent(&mut self) {
+        self.tokens.push(Token {
+            text: "    ".repeat(self.indent_level),
+            token_type: TokenType::Plain,
+        });
+    }
+
+    pub fn add_space(&mut self) {
+        self.tokens.push(Token {
+            text: " ".to_string(),
+            token_type: TokenType::Plain,
+        });
+    }
+
+    // Helper methods for common patterns
+    pub fn add_color(&mut self, color: Color) {
+        self.add_type("Color");
+        self.add_operator("::");
+        self.add_function("from_rgba");
+        self.add_plain("(");
+        self.add_number(&format!("{:.1}", color.r));
+        self.add_plain(", ");
+        self.add_number(&format!("{:.1}", color.g));
+        self.add_plain(", ");
+        self.add_number(&format!("{:.1}", color.b));
+        self.add_plain(", ");
+        self.add_number(&format!("{:.1}", color.a));
+        self.add_plain(")");
+    }
+
+    pub fn add_color_hex(&mut self, color: Color) {
+        let r = (color.r * 255.0) as u8;
+        let g = (color.g * 255.0) as u8;
+        let b = (color.b * 255.0) as u8;
+        
+        if color.a < 1.0 {
+            let a = (color.a * 255.0) as u8;
+            self.add_type("Color");
+            self.add_operator("::");
+            self.add_function("from_rgba8");
+            self.add_plain("(");
+            self.add_number(&format!("0x{:02X}", r));
+            self.add_plain(", ");
+            self.add_number(&format!("0x{:02X}", g));
+            self.add_plain(", ");
+            self.add_number(&format!("0x{:02X}", b));
+            self.add_plain(", ");
+            self.add_number(&format!("0x{:02X}", a));
+            self.add_plain(")");
+        } else {
+            self.add_type("Color");
+            self.add_operator("::");
+            self.add_function("from_rgb8");
+            self.add_plain("(");
+            self.add_number(&format!("0x{:02X}", r));
+            self.add_plain(", ");
+            self.add_number(&format!("0x{:02X}", g));
+            self.add_plain(", ");
+            self.add_number(&format!("0x{:02X}", b));
+            self.add_plain(")");
+        }
+    }
+
+    pub fn add_field(&mut self, name: &str, value_fn: impl FnOnce(&mut Self)) {
+        self.add_indent();
+        self.add_plain(name);
+        self.add_operator(":");
+        self.add_space();
+        value_fn(self);
+        self.add_plain(",");
+        self.add_newline();
+    }
+
+    pub fn add_struct(&mut self, name: &str, fields_fn: impl FnOnce(&mut Self)) {
+        self.add_type(name);
+        self.add_space();
+        self.add_plain("{");
+        self.add_newline();
+        self.increase_indent();
+        fields_fn(self);
+        self.decrease_indent();
+        self.add_indent();
+        self.add_plain("}");
+    }
 }
 
 /// Code generator for creating Iced code from widget hierarchy
@@ -236,7 +433,15 @@ impl<'a> CodeGenerator<'a> {
         self.add_function("new");
         self.add_plain("() ");
         self.add_operator("->");
-        self.add_plain(" (Self, iced::Task<Message>) {");
+        self.add_plain(" (");
+        self.add_keyword("Self");
+        self.add_plain( ", " );
+        self.add_function("iced");
+        self.add_operator("::");
+        self.add_type("Task");
+        self.add_plain("<");
+        self.add_type("Message");
+        self.add_plain( ">) {" );
         self.add_newline();
         self.indent_level += 1;
         
@@ -1811,7 +2016,7 @@ impl<'a> CodeGenerator<'a> {
         }
         
         // Padding
-        if props.padding != Padding::new(0.0) {
+        if props.padding != Padding::ZERO {
             self.add_newline();
             self.indent_level += 1;
             self.add_indent();
@@ -2669,8 +2874,14 @@ pub fn build_code_view_with_height<'a>(
                 })
         )
         .width(Length::Fill)
-        .height(Length::Fill)
-//        .height(Length::Fixed(height))
+        .height(
+            if height == 0.0 {
+                Length::Fill
+            }
+            else {
+                Length::Fixed(height)
+            }
+        )
     )
     .width(Length::Fill)
     .height(Length::Fill)
@@ -2680,4 +2891,189 @@ pub fn build_code_view_with_height<'a>(
 /// Build a syntax-highlighted code view
 pub fn build_code_view<'a>(tokens: &[Token], theme: Theme) -> Element<'a, crate::widget_helper::Message> {
     build_code_view_with_height(tokens, 300.0, theme)
+}
+
+/// Build a syntax-highlighted code view - generic so I can use it outside of widget_helper::Messages
+pub fn build_code_view_with_height_generic<'a, Message: 'a>(
+    tokens: &[Token], 
+    height: f32,
+    theme: Theme
+) -> Element<'a, Message> {
+    // Group tokens by lines
+    let mut lines: Vec<Vec<Token>> = vec![vec![]];
+    
+    for token in tokens {
+        if token.text.contains('\n') {
+            let parts: Vec<&str> = token.text.split('\n').collect();
+            for (i, part) in parts.iter().enumerate() {
+                if !part.is_empty() {
+                    lines.last_mut().unwrap().push(Token {
+                        text: part.to_string(),
+                        token_type: token.token_type,
+                    });
+                }
+                if i < parts.len() - 1 {
+                    lines.push(vec![]);
+                }
+            }
+        } else {
+            lines.last_mut().unwrap().push(token.clone());
+        }
+    }
+
+    let bg_color = match theme {
+        Theme::Light => Color::from_rgb8(248, 248, 248),
+        Theme::Dark => Color::from_rgb8(30, 30, 30),
+        _ => Color::from_rgb8(40, 40, 40),
+    };
+
+    let border_color = match theme {
+        Theme::Light => Color::from_rgb8(200, 200, 200),
+        Theme::Dark => Color::from_rgb8(60, 60, 60),
+        _ => Color::from_rgb8(80, 80, 80),
+    };
+    
+    let content = column(
+        lines.into_iter().map(|line| {
+            if line.is_empty() {
+                row![text(" ").size(14).font(iced::Font::MONOSPACE)].into()
+            } else {
+                row(
+                    line.into_iter().map(|token| {
+                        text(token.text)
+                            .size(14)
+                            .font(iced::Font::MONOSPACE)
+                            .color(token.token_type.color_for_theme(&theme))
+                            .into()
+                    }).collect::<Vec<Element<'a, Message>>>()
+                ).into()
+            }
+        }).collect::<Vec<Element<'a, Message>>>()
+    )
+    .spacing(2);
+    
+    container(
+        scrollable(
+            container(content)
+                .width(Length::Fill)
+                .padding(15)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(bg_color)),
+                    border: Border {
+                        color: border_color,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                })
+        )
+        .width(Length::Fill)
+        .height(
+            if height == 0.0 {
+                Length::Fill
+            } else {
+                Length::Fixed(height)
+            }
+        )
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+
+
+/// StyleFn Generators
+
+/// Generate tokens for container style code
+pub fn generate_container_style_tokens(
+    text_color: Color,
+    background_color: Color,
+    border_color: Color,
+    border_width: f32,
+    border_radius_top_left: f32,
+    border_radius_top_right: f32,
+    border_radius_bottom_right: f32,
+    border_radius_bottom_left: f32,
+    shadow_enabled: bool,
+    shadow_color: Color,
+    shadow_offset_x: f32,
+    shadow_offset_y: f32,
+    shadow_blur_radius: f32,
+    snap: bool,
+) -> Vec<Token> {
+    let mut builder = TokenBuilder::new();
+
+    builder.add_plain("container");
+    builder.add_operator("::");
+    builder.add_type("Style");
+    builder.add_space();
+    builder.add_plain("{");
+    builder.add_newline();
+    builder.increase_indent();
+
+    // text_color field
+    builder.add_field("text_color", |b| {
+        b.add_plain("Some(");
+        b.add_color(text_color);
+        b.add_plain(")");
+    });
+
+    // background field
+    builder.add_field("background", |b| {
+        b.add_plain("Some(");
+        b.add_type("Background");
+        b.add_operator("::");
+        b.add_type("Color");
+        b.add_plain("(");
+        b.add_color(background_color);
+        b.add_plain("))");
+    });
+
+    // border field
+    builder.add_field("border", |b| {
+        b.add_struct("Border", |b| {
+            b.add_field("color", |b| b.add_color(border_color));
+            b.add_field("width", |b| b.add_number(&format!("{:.1}", border_width)));
+            b.add_field("radius", |b| {
+                b.add_struct("Radius", |b| {
+                    b.add_field("top_left", |b| b.add_number(&format!("{:.1}", border_radius_top_left)));
+                    b.add_field("top_right", |b| b.add_number(&format!("{:.1}", border_radius_top_right)));
+                    b.add_field("bottom_right", |b| b.add_number(&format!("{:.1}", border_radius_bottom_right)));
+                    b.add_field("bottom_left", |b| b.add_number(&format!("{:.1}", border_radius_bottom_left)));
+                });
+            });
+        });
+    });
+
+    // shadow field
+    builder.add_field("shadow", |b| {
+        if shadow_enabled {
+            b.add_struct("Shadow", |b| {
+                b.add_field("color", |b| b.add_color(shadow_color));
+                b.add_field("offset", |b| {
+                    b.add_struct("Vector", |b| {
+                        b.add_field("x", |b| b.add_number(&format!("{:.1}", shadow_offset_x)));
+                        b.add_field("y", |b| b.add_number(&format!("{:.1}", shadow_offset_y)));
+                    });
+                });
+                b.add_field("blur_radius", |b| b.add_number(&format!("{:.1}", shadow_blur_radius)));
+            });
+        } else {
+            b.add_type("Shadow");
+            b.add_operator("::");
+            b.add_function("default");
+            b.add_plain("()");
+        }
+    });
+
+    // snap field
+    builder.add_field("snap", |b| {
+        b.add_keyword(if snap { "true" } else { "false" });
+    });
+
+    builder.decrease_indent();
+    builder.add_plain("}");
+
+    builder.into_tokens()
 }
