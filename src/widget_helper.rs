@@ -1,6 +1,6 @@
 use iced::{
     alignment::{Horizontal, Vertical}, widget::{
-        button, checkbox, column, container, horizontal_rule, horizontal_space, pick_list, progress_bar, radio, row, scrollable, slider, text, text_input, toggler, vertical_rule, vertical_slider, vertical_space, Space, tooltip, svg, image,
+        button, checkbox, column, container, rule::horizontal as horizontal_rule, space::horizontal as horizontal_space, pick_list, progress_bar, radio, row, scrollable, slider, text, text_input, toggler, rule::vertical as vertical_rule, vertical_slider, space::vertical as vertical_space, Space, tooltip, svg, image,
     }, Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow, Theme, Vector, ContentFit
 };
 use std::collections::HashSet;
@@ -1113,7 +1113,7 @@ impl WidgetVisualizer {
                 text("Widget Visualizer").size(24),
                 horizontal_rule(5),
             ].spacing(10).align_x(Alignment::Center),
-            Space::new(Length::Fill, 10),
+            Space::new().width(Length::Fill).height(10),
 
             // Theme selector
             row![
@@ -1126,9 +1126,9 @@ impl WidgetVisualizer {
                 ),
                 horizontal_space(),
             ].width(Length::Fill).spacing(20),
-            Space::new(Length::Fill, 10),
+            Space::new().width(Length::Fill).height(10),
             horizontal_rule(5),
-            Space::new(Length::Fill, 10),
+            Space::new().width(Length::Fill).height(10),
             
             // Widget hierarchy
             column![
@@ -1564,10 +1564,8 @@ impl WidgetVisualizer {
         let widget_preview = self.build_widget_preview(self.hierarchy.root());
 
         let preview_scoped = themer(
-            {
-                let t = self.theme.clone();
-                move |_| t.clone()
-            },
+            Some(self.theme.clone()),
+
             container(widget_preview)
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -1611,7 +1609,7 @@ impl WidgetVisualizer {
             .spacing(20),
 
             horizontal_rule(5),
-            Space::new(Length::Fill, 10),
+            Space::new().width(Length::Fill).height(10),
 
             container(preview_scoped)
             .padding(5)
@@ -2091,7 +2089,7 @@ impl WidgetVisualizer {
                     text("Global Settings and Defaults").size(24).center(),
                     horizontal_rule(5),
                 ].spacing(10).align_x(Alignment::Center),
-                Space::new(Length::Fill, 10),
+                Space::new().width(Length::Fill).height(10),
 
                 row![
                     column![
@@ -2170,7 +2168,7 @@ impl WidgetVisualizer {
             .spacing(20),
             
             horizontal_rule(5),
-            Space::new(Length::Fill, 10),
+            Space::new().width(Length::Fill).height(10),
             
             container(
                 scrollable(

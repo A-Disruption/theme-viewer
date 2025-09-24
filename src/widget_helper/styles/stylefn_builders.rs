@@ -1,8 +1,8 @@
-use iced::widget::{button, checkbox, column, container, horizontal_rule, horizontal_space, slider, row, scrollable, text, text_input, Space};
+use iced::widget::{button, checkbox, column, container, rule::horizontal as horizontal_rule, space::horizontal as horizontal_space, slider, row, scrollable, text, text_input, Space};
 use iced::Length::FillPortion;
 use iced::{Alignment, Background, Border, Color, Element, Length, Shadow, Theme, Padding, Task,};
 use std::collections::BTreeMap;
-use crate::widget::color_picker;
+use widgets::color_picker;
 use crate::widget::generic_overlay::{overlay_button, OverlayButton};
 
 
@@ -357,7 +357,7 @@ impl CustomThemes {
                 
                 row![
                     column![
-                        Space::new(Length::Fill, Length::Fixed(10.0)),
+                        Space::new().width(Length::Fill).height(Length::Fixed(10.0)),
                         checkbox("Enable Shadow", self.container_shadow_enabled)
                             .on_toggle(Message::UpdateContainerShadowEnabled),
                     ].width(Length::FillPortion(1)).height(Length::Fixed(50.0)),
@@ -478,7 +478,7 @@ impl CustomThemes {
                 text("Lorem ipsum dolor sit amet, consectetur adipiscing elit.").size(12),
                 row![
                     text("Sample text").size(10),
-                    Space::new(Length::Fill, Length::Fixed(1.0)),
+                    Space::new().width(Length::Fill).height(Length::Fixed(1.0)),
                     text("More text").size(10),
                 ]
             ]

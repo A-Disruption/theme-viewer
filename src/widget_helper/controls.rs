@@ -1,7 +1,7 @@
 // controls.rs
 use iced::{
     widget::{
-        button, checkbox, column, pick_list, radio, row, scrollable, slider, text, text_input, vertical_space, Space, horizontal_rule, horizontal_space, container,
+        button, checkbox, column, pick_list, radio, row, scrollable, slider, text, text_input, space::vertical as vertical_space, Space, rule::horizontal as horizontal_rule, space::horizontal as horizontal_space, container,
     }, Alignment, Color, Element, Length, Padding, Theme
 };
 use crate::widget_helper::{
@@ -1843,7 +1843,7 @@ where
             .spacing(5)
             .into()
         }
-        _ => Space::with_width(0).into(),
+        _ => Space::new().width(0).into(),
     };
 
     row![picker, extra].spacing(15).into()

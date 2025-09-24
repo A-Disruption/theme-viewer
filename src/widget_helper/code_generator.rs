@@ -1,4 +1,4 @@
-use iced::{Color, Element, Length, Padding, widget::{column, container, horizontal_space, row, scrollable, text}, Background, Border, Theme};
+use iced::{Color, Element, Length, Padding, widget::{column, container, space::horizontal, row, scrollable, text}, Background, Border, Theme};
 use crate::widget_helper::{
     Widget, WidgetType, Properties, WidgetId, WidgetHierarchy, 
     ContainerAlignX, ContainerAlignY, ButtonStyleType, FontType,
