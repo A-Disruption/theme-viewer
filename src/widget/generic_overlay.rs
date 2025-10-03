@@ -401,8 +401,8 @@ where
             };
 
             state.position = Point::new(
-                (window_width - overlay_width) / 2.0 + offset.x,
-                (window_height - overlay_height) / 2.0 + offset.y,
+                (window_width - overlay_width) / 2.0,
+                (window_height - overlay_height) / 2.0,
             );
         }
 

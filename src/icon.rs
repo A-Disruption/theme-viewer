@@ -1,6 +1,6 @@
 // Generated automatically by iced_fontello at build time.
 // Do not edit manually. Source: ../fonts/fonts.toml
-// a802b031cbe45d3e3659b50cff9e48d674685cb97d28b158f38351bc28a6fb0b
+// a94c08cbdc34881f47f15d9df59536fdbc41a9172d08899275abb0b5b609137c
 use iced::widget::{text, Text};
 use iced::Font;
 
@@ -14,12 +14,20 @@ pub fn cog<'a>() -> Text<'a> {
     icon("\u{2699}")
 }
 
+pub fn collapsed<'a>() -> Text<'a> {
+    icon("\u{25B8}")
+}
+
 pub fn copy<'a>() -> Text<'a> {
     icon("\u{F0C5}")
 }
 
 pub fn edit<'a>() -> Text<'a> {
     icon("\u{270E}")
+}
+
+pub fn expanded<'a>() -> Text<'a> {
+    icon("\u{25BE}")
 }
 
 pub fn global<'a>() -> Text<'a> {
@@ -38,6 +46,10 @@ pub fn preview<'a>() -> Text<'a> {
     icon("\u{1F304}")
 }
 
+pub fn save<'a>() -> Text<'a> {
+    icon("\u{1F4BE}")
+}
+
 pub fn swap<'a>() -> Text<'a> {
     icon("\u{F0EC}")
 }
@@ -48,6 +60,10 @@ pub fn theme<'a>() -> Text<'a> {
 
 pub fn trash<'a>() -> Text<'a> {
     icon("\u{F1F8}")
+}
+
+pub fn type_icon<'a>() -> Text<'a> {
+    icon("\u{F0F7}")
 }
 
 fn icon(codepoint: &str) -> Text<'_> {

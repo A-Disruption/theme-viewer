@@ -2,7 +2,7 @@ use iced::{Color, Element, Length, Padding, widget::{column, container, space::h
 use crate::widget_helper::{
     Widget, WidgetType, Properties, WidgetId, WidgetHierarchy, 
     ContainerAlignX, ContainerAlignY, ButtonStyleType, FontType,
-    RuleOrientation, ContentFitChoice, TooltipPosition
+    Orientation, ContentFitChoice, TooltipPosition, type_system::{EnumDef, TypeSystem}
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -299,11 +299,12 @@ pub struct CodeGenerator<'a> {
     widget_counts: HashMap<String, usize>,  // Track duplicate widgets
     used_widgets: HashSet<&'static str>,  // Track which widgets are used for the impl code gen
     widget_names: HashMap<WidgetId, String>,
+    type_system: Option<&'a TypeSystem>,
     theme: Theme,
 }
 
 impl<'a> CodeGenerator<'a> {
-    pub fn new(hierarchy: &'a WidgetHierarchy, theme: Theme) -> Self {
+    pub fn new(hierarchy: &'a WidgetHierarchy, theme: Theme, type_system: Option<&'a TypeSystem>) -> Self {
         Self {
             hierarchy,
             indent_level: 0,
@@ -313,6 +314,7 @@ impl<'a> CodeGenerator<'a> {
             widget_counts: HashMap::new(),
             used_widgets: HashSet::new(),
             widget_names: HashMap::new(),
+            type_system: type_system,
             theme,
         }
     }
@@ -353,6 +355,127 @@ impl<'a> CodeGenerator<'a> {
         self.tokens.clone()
     }
 
+    fn generate_enum_definitions(&mut self) {
+        if self.type_system.is_none() { return }
+        for enum_def in self.type_system.unwrap().enums.values() {
+            self.generate_enum_code(enum_def);
+            self.add_newline();
+            self.add_newline();
+        }
+    }
+
+    fn generate_enum_code(&mut self, enum_def: &EnumDef) {
+        self.add_comment(&format!("// {} enum", enum_def.name));
+        self.add_newline();
+        self.add_plain("#[derive(Debug, Clone, Copy, PartialEq, Eq)]");
+        self.add_newline();
+        self.add_keyword("pub enum");
+        self.add_plain(" ");
+        self.add_type(&enum_def.name);
+        self.add_plain(" {");
+        self.add_newline();
+        self.indent_level += 1;
+        
+        for variant in &enum_def.variants {
+            self.add_indent();
+            self.add_plain(&variant.name);
+            self.add_plain(",");
+            self.add_newline();
+        }
+        
+        self.indent_level -= 1;
+        self.add_plain("}");
+        self.add_newline();
+        self.add_newline();
+        
+        // Generate Display impl
+        self.generate_enum_display_impl(enum_def);
+        self.add_newline();
+        
+        // Generate ALL constant for combo_box
+        self.generate_enum_all_const(enum_def);
+    }
+
+    fn generate_enum_display_impl(&mut self, enum_def: &EnumDef) {
+        self.add_keyword("impl");
+        self.add_plain(" std::fmt::Display ");
+        self.add_keyword("for");
+        self.add_plain(" ");
+        self.add_type(&enum_def.name);
+        self.add_plain(" {");
+        self.add_newline();
+        self.indent_level += 1;
+        
+        self.add_indent();
+        self.add_keyword("fn");
+        self.add_plain(" ");
+        self.add_function("fmt");
+        self.add_plain("(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {");
+        self.add_newline();
+        self.indent_level += 1;
+        
+        self.add_indent();
+        self.add_keyword("match");
+        self.add_plain(" self {");
+        self.add_newline();
+        self.indent_level += 1;
+        
+        for variant in &enum_def.variants {
+            self.add_indent();
+            self.add_type(&enum_def.name);
+            self.add_operator("::");
+            self.add_plain(&variant.name);
+            self.add_plain(" => write!(f, ");
+            self.add_string(&format!("\"{}\"", &variant.name));
+            self.add_plain("),");
+            self.add_newline();
+        }
+        
+        self.indent_level -= 1;
+        self.add_indent();
+        self.add_plain("}");
+        self.add_newline();
+        
+        self.indent_level -= 1;
+        self.add_indent();
+        self.add_plain("}");
+        self.add_newline();
+        
+        self.indent_level -= 1;
+        self.add_plain("}");
+    }
+
+    fn generate_enum_all_const(&mut self, enum_def: &EnumDef) {
+        self.add_keyword("impl");
+        self.add_plain(" ");
+        self.add_type(&enum_def.name);
+        self.add_plain(" {");
+        self.add_newline();
+        self.indent_level += 1;
+        
+        self.add_indent();
+        self.add_keyword("pub const");
+        self.add_plain(" ALL: &'static [Self] = &[");
+        self.add_newline();
+        self.indent_level += 1;
+        
+        for variant in &enum_def.variants {
+            self.add_indent();
+            self.add_plain("Self::");
+            self.add_plain(&variant.name);
+            self.add_plain(",");
+            self.add_newline();
+        }
+        
+        self.indent_level -= 1;
+        self.add_indent();
+        self.add_plain("];");
+        self.add_newline();
+        
+        self.indent_level -= 1;
+        self.add_plain("}");
+    }
+
     /// Generate complete application code
     pub fn generate_app_code(&mut self) -> Vec<Token> {
         self.tokens.clear();
@@ -368,6 +491,10 @@ impl<'a> CodeGenerator<'a> {
         // Generate imports
         self.generate_imports();
         self.add_newline();
+        self.add_newline();
+
+        // Generate enum definitions
+        self.generate_enum_definitions();
         self.add_newline();
         
         // Generate Message enum
@@ -533,6 +660,64 @@ impl<'a> CodeGenerator<'a> {
                 self.add_operator(":");
                 self.add_plain(" None,");
                 self.add_newline();
+            }
+            WidgetType::ComboBox => {
+                if self.type_system.is_none() { return }
+                // Get the enum definition and initialize properly
+                if let Some(ref enum_id) = props.referenced_enum {
+                    if let Some(enum_def) = self.type_system.unwrap().get_enum(enum_id.clone()) {
+                        self.add_indent();
+                        self.add_identifier(&format!("{}_value", to_snake_case(&name)));
+                        self.add_operator(":");
+                        self.add_plain(" ");
+                        self.add_type(&enum_def.name);
+                        self.add_operator("::");
+                        self.add_plain(&enum_def.variants[0].name);
+                        self.add_plain(",");
+                        self.add_newline();
+                        
+                        // Initialize state with all variants
+                        self.add_indent();
+                        self.add_identifier(&format!("{}_state", to_snake_case(&name)));
+                        self.add_operator(":");
+                        self.add_plain(" ");
+                        self.add_type("combo_box::State");
+                        self.add_operator("::");
+                        self.add_function("new");
+                        self.add_plain("(");
+                        self.add_type(&enum_def.name);
+                        self.add_operator("::");
+                        self.add_plain("ALL.to_vec()");
+                        self.add_plain("),");
+                        self.add_newline();  
+                    }
+                } else {
+                    self.add_indent();
+                    self.add_identifier(&format!("{}_value", to_snake_case(&name)));
+                    self.add_operator(":");
+                    self.add_plain(" String::new(),");
+                    self.add_newline();
+                    
+                    self.add_indent();
+                    self.add_identifier(&format!("{}_state", to_snake_case(&name)));
+                    self.add_operator(":");
+                    self.add_plain(" ");
+                    self.add_type("combo_box::State");
+                    self.add_operator("::");
+                    self.add_function("new");
+                    self.add_plain("(vec![");
+                    for (i, option) in props.combobox_options.iter().enumerate() {
+                        self.add_string(&format!("\"{}\"", option));
+                        self.add_operator(".");
+                        self.add_function("to_string");
+                        self.add_plain("()");
+                        if i < props.combobox_options.len() - 1 {
+                            self.add_plain(", ");
+                        }
+                    }
+                    self.add_plain("]),");
+                    self.add_newline();
+                }
             }
             _ => {}
         }
@@ -853,17 +1038,18 @@ impl<'a> CodeGenerator<'a> {
             WidgetType::Toggler => self.used_widgets.insert("toggler"),
             WidgetType::PickList => self.used_widgets.insert("pick_list"),
             WidgetType::Scrollable => self.used_widgets.insert("scrollable"),
-            WidgetType::Space => {
-                self.used_widgets.insert("vertical_space")
-            //    self.used_widgets.insert("horizontal_space");
-            }
-            WidgetType::Rule => {
-                self.used_widgets.insert("horizontal_rule")
-            //    self.used_widgets.insert("vertical_rule");
-            }
+            WidgetType::Space => self.used_widgets.insert("space"),
+            WidgetType::Rule => self.used_widgets.insert("rule"),
             WidgetType::Image => self.used_widgets.insert("image"),
             WidgetType::Svg => self.used_widgets.insert("svg"),
             WidgetType::Tooltip => self.used_widgets.insert("tooltip"),
+            WidgetType::ComboBox => self.used_widgets.insert("combo_box"),
+            WidgetType::Markdown => self.used_widgets.insert("markdown"),
+            WidgetType::MouseArea => self.used_widgets.insert("mouse_area"),
+            WidgetType::QRCode => self.used_widgets.insert("qr_code"),
+            WidgetType::Stack => self.used_widgets.insert("stack"),
+            WidgetType::Themer => self.used_widgets.insert("themer"),
+            WidgetType::Pin => self.used_widgets.insert("pin"),
         };
         
         for child in &widget.children {
@@ -965,6 +1151,64 @@ impl<'a> CodeGenerator<'a> {
                 self.add_plain("),");
                 self.add_newline();
             }
+            WidgetType::ComboBox => {
+                let props = &widget.properties;
+                
+                // Determine the type parameter based on whether enum is used
+                let type_name = if let Some(ref enum_id) = props.referenced_enum {
+                    if let Some(enum_def) = self.type_system.unwrap().get_enum(enum_id.clone()) {
+                        enum_def.name.clone()
+                    } else {
+                        "String".to_string()
+                    }
+                } else {
+                    "String".to_string()
+                };
+                
+                // Always generate Selected message
+                self.add_indent();
+                self.add_plain(&format!("{}Selected", to_pascal_case(&name)));
+                self.add_plain("(");
+                self.add_type(&type_name);
+                self.add_plain("),");
+                self.add_newline();
+                
+                // Conditionally generate on_input
+                if props.combobox_use_on_input {
+                    self.add_indent();
+                    self.add_plain(&format!("{}OnInput", to_pascal_case(&name)));
+                    self.add_plain("(");
+                    self.add_type("String");
+                    self.add_plain("),");
+                    self.add_newline();
+                }
+                
+                // Conditionally generate on_option_hovered
+                if props.combobox_use_on_option_hovered {
+                    self.add_indent();
+                    self.add_plain(&format!("{}OnOptionHovered", to_pascal_case(&name)));
+                    self.add_plain("(");
+                    self.add_type(&type_name);
+                    self.add_plain("),");
+                    self.add_newline();
+                }
+                
+                // Conditionally generate on_open
+                if props.combobox_use_on_open {
+                    self.add_indent();
+                    self.add_plain(&format!("{}OnOpen", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                
+                // Conditionally generate on_close
+                if props.combobox_use_on_close {
+                    self.add_indent();
+                    self.add_plain(&format!("{}OnClose", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+            }
             _ => {}
         }
         
@@ -1035,6 +1279,52 @@ impl<'a> CodeGenerator<'a> {
                 self.add_plain(",");
                 self.add_newline();
             }
+            WidgetType::ComboBox => {
+                if let Some(ref enum_id) = props.referenced_enum {
+                    if let Some(enum_def) = self.type_system.unwrap().get_enum(enum_id.clone()) {
+                        // Enum-based combo box
+                        self.add_indent();
+                        self.add_identifier(&format!("{}_value", to_snake_case(&name)));
+                        self.add_operator(":");
+                        self.add_plain(" ");
+                        self.add_type(&enum_def.name);
+                        self.add_plain(",");
+                        self.add_newline();
+                        
+                        self.add_indent();
+                        self.add_identifier(&format!("{}_state", to_snake_case(&name)));
+                        self.add_operator(":");
+                        self.add_plain(" ");
+                        self.add_type("combo_box::State");
+                        self.add_operator("<");
+                        self.add_type(&enum_def.name);
+                        self.add_operator(">");
+                        self.add_plain(",");
+                        self.add_newline();
+                        return;
+                    }
+                }
+                
+                // String-based combo box (existing code)
+                self.add_indent();
+                self.add_identifier(&format!("{}_value", to_snake_case(&name)));
+                self.add_operator(":");
+                self.add_plain(" ");
+                self.add_type("String");
+                self.add_plain(",");
+                self.add_newline();
+                
+                self.add_indent();
+                self.add_identifier(&format!("{}_state", to_snake_case(&name)));
+                self.add_operator(":");
+                self.add_plain(" ");
+                self.add_type("combo_box::State");
+                self.add_operator("<");
+                self.add_type("String");
+                self.add_operator(">");
+                self.add_plain(",");
+                self.add_newline();
+            }
             _ => {}
         }
         
@@ -1045,6 +1335,7 @@ impl<'a> CodeGenerator<'a> {
 
     fn generate_update_match_arms(&mut self, widget: &Widget) {
         let name = self.get_widget_name(widget.id);
+        let props = &widget.properties;
         
         match widget.widget_type {
             WidgetType::Button => {
@@ -1227,6 +1518,174 @@ impl<'a> CodeGenerator<'a> {
                 self.add_plain("}");
                 self.add_newline();
             }
+            WidgetType::ComboBox => {
+                let name = self.get_widget_name(widget.id);
+                let props = &widget.properties;
+                
+                // Always generate Selected handler with helpful example
+                self.add_indent();
+                self.add_type("Message");
+                self.add_operator("::");
+                self.add_plain(&format!("{}Selected", to_pascal_case(&name)));
+                self.add_plain("(");
+                self.add_identifier("value");
+                self.add_plain(") ");
+                self.add_operator("=>");
+                self.add_plain(" {");
+                self.add_newline();
+                self.indent_level += 1;
+                
+                // Add helpful println
+                self.add_indent();
+                self.add_macro("println!");
+                self.add_plain("(");
+                self.add_string(&format!("\"{} selected: {{:?}}\"", name));
+                self.add_plain(", ");
+                self.add_identifier("value");
+                self.add_plain(");");
+                self.add_newline();
+                
+                // Update state
+                self.add_indent();
+                self.add_keyword("self");
+                self.add_operator(".");
+                self.add_identifier(&format!("{}_value", to_snake_case(&name)));
+                self.add_plain(" ");
+                self.add_operator("=");
+                self.add_plain(" ");
+                self.add_identifier("value");
+                self.add_plain(";");
+                self.add_newline();
+                
+                self.indent_level -= 1;
+                self.add_indent();
+                self.add_plain("}");
+                self.add_newline();
+                
+                // Conditionally generate on_input handler with example
+                if props.combobox_use_on_input {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}OnInput", to_pascal_case(&name)));
+                    self.add_plain("(");
+                    self.add_identifier("text");
+                    self.add_plain(") ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    
+                    self.add_indent();
+                    self.add_macro("println!");
+                    self.add_plain("(");
+                    self.add_string(&format!("\"{} input text: {{}}\"", name));
+                    self.add_plain(", ");
+                    self.add_identifier("text");
+                    self.add_plain(");");
+                    self.add_newline();
+                    
+                    self.add_indent();
+                    self.add_comment("// You can filter options, update state, etc.");
+                    self.add_newline();
+                    
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Conditionally generate on_option_hovered handler with example
+                if props.combobox_use_on_option_hovered {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}OnOptionHovered", to_pascal_case(&name)));
+                    self.add_plain("(");
+                    self.add_identifier("option");
+                    self.add_plain(") ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    
+                    self.add_indent();
+                    self.add_macro("println!");
+                    self.add_plain("(");
+                    self.add_string(&format!("\"{} option hovered: {{:?}}\"", name));
+                    self.add_plain(", ");
+                    self.add_identifier("option");
+                    self.add_plain(");");
+                    self.add_newline();
+                    
+                    self.add_indent();
+                    self.add_comment("// Preview the hovered option, update UI, etc.");
+                    self.add_newline();
+                    
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Conditionally generate on_open handler with example
+                if props.combobox_use_on_open {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}OnOpen", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    
+                    self.add_indent();
+                    self.add_macro("println!");
+                    self.add_plain("(");
+                    self.add_string(&format!("\"{} opened!\"", name));
+                    self.add_plain(");");
+                    self.add_newline();
+                    
+                    self.add_indent();
+                    self.add_comment("// Refresh data, log analytics, etc.");
+                    self.add_newline();
+                    
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Conditionally generate on_close handler with example
+                if props.combobox_use_on_close {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}OnClose", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    
+                    self.add_indent();
+                    self.add_macro("println!");
+                    self.add_plain("(");
+                    self.add_string(&format!("\"{} closed!\"", name));
+                    self.add_plain(");");
+                    self.add_newline();
+                    
+                    self.add_indent();
+                    self.add_comment("// Save user choice, validate selection, etc.");
+                    self.add_newline();
+                    
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+            }
             _ => {}
         }
         
@@ -1242,7 +1701,18 @@ impl<'a> CodeGenerator<'a> {
         self.add_keyword("fn");
         self.add_plain(" ");
         self.add_function("view");
-        self.add_plain("(&self) -> Element<Message> {");
+        self.add_plain("<");
+        self.add_operator("'a");
+        self.add_plain(">");
+        self.add_plain("(");
+        self.add_operator("&'a");
+        self.add_type("self");
+        self.add_plain(")");
+        self.add_operator(" -> ");
+        self.add_type("Element");
+        self.add_plain("<");
+        self.add_operator("Message");
+        self.add_plain("> {");
         self.add_newline();
         self.indent_level += 1;
 
@@ -1323,7 +1793,8 @@ impl<'a> CodeGenerator<'a> {
                         self.add_newline();
                     }
                 }
-                
+
+                self.add_newline();
                 self.indent_level -= 1;
                 self.add_indent();
                 self.add_plain("]");
@@ -1352,6 +1823,7 @@ impl<'a> CodeGenerator<'a> {
                     }
                 }
                 
+                self.add_newline();
                 self.indent_level -= 1;
                 self.add_indent();
                 self.add_plain("]");
@@ -1362,10 +1834,11 @@ impl<'a> CodeGenerator<'a> {
                 self.add_indent();
                 self.add_function("button");
                 self.add_plain("(");
-                self.add_function("text");
-                self.add_plain("(");
+//                self.add_function("text");
+//                self.add_plain("(");
                 self.add_string(&format!("\"{}\"", props.text_content));
-                self.add_plain("))");
+//                self.add_plain(")");
+                self.add_plain(")");
                 self.add_newline();
                 self.indent_level += 1;
                 self.add_indent();
@@ -1752,18 +2225,25 @@ impl<'a> CodeGenerator<'a> {
             }
             WidgetType::Space => {
                 self.add_indent();
-                self.add_function("vertical_space");
+                match props.orientation {
+                    Orientation::Horizontal => {
+                        self.add_function("space::horizontal");
+                    }
+                    Orientation::Vertical => {
+                        self.add_function("space::vertical");
+                    }
+                }
                 self.add_plain("()");
                 self.generate_space_properties(props);
             }
             WidgetType::Rule => {
                 self.add_indent();
-                match props.rule_orientation {
-                    RuleOrientation::Horizontal => {
-                        self.add_function("horizontal_rule");
+                match props.orientation {
+                    Orientation::Horizontal => {
+                        self.add_function("rule::horizontal");
                     }
-                    RuleOrientation::Vertical => {
-                        self.add_function("vertical_rule");
+                    Orientation::Vertical => {
+                        self.add_function("rule::vertical");
                     }
                 }
                 self.add_plain("(");
@@ -1844,6 +2324,363 @@ impl<'a> CodeGenerator<'a> {
                 self.indent_level -= 1;
                 self.add_indent();
                 self.add_plain(")");
+            }
+            WidgetType::ComboBox => {
+                let name = self.get_widget_name(widget.id);
+                self.add_indent();
+                self.add_function("combo_box");
+                self.add_plain("(");
+                self.add_newline();
+                self.indent_level += 1;
+                
+                // State reference
+                self.add_indent();
+                self.add_operator("&");
+                if use_self {
+                    self.add_keyword("self");
+                    self.add_operator(".");
+                    self.add_identifier(&format!("{}_state", to_snake_case(&name)));
+                } else {
+                    self.add_plain("state");
+                }
+                self.add_plain(",");
+                self.add_newline();
+                
+                // Placeholder
+                self.add_indent();
+                self.add_string(&format!("\"{}\"", props.combobox_placeholder));
+                self.add_plain(",");
+                self.add_newline();
+                
+                // Current value
+                self.add_indent();
+                if use_self {
+                    self.add_plain("Some(");
+                    self.add_operator("&");
+                    self.add_keyword("self");
+                    self.add_operator(".");
+                    self.add_identifier(&format!("{}_value", to_snake_case(&name)));
+                    self.add_plain(")");
+                } else {
+                    if let Some(ref val) = props.combobox_selected {
+                        self.add_plain("Some(");
+                        self.add_string(&format!("\"{}\"", val));
+                        self.add_plain(")");
+                    } else {
+                        self.add_plain("None");
+                    }
+                }
+                self.add_plain(",");
+                self.add_newline();
+                
+                // On option selected (always present)
+                self.add_indent();
+                if use_self {
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Selected", to_pascal_case(&name)));
+                } else {
+                    self.add_operator("|");
+                    self.add_identifier("_");
+                    self.add_operator("|");
+                    self.add_plain(" ");
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain("Noop");
+                }
+                self.add_newline();
+                
+                self.indent_level -= 1;
+                self.add_indent();
+                self.add_plain(")");
+                
+                // Now add optional methods
+                if props.combobox_use_on_input {
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_input");
+                    self.add_plain("(");
+                    if use_self {
+                        self.add_type("Message");
+                        self.add_operator("::");
+                        self.add_plain(&format!("{}OnInput", to_pascal_case(&name)));
+                    } else {
+                        self.add_operator("|");
+                        self.add_identifier("_");
+                        self.add_operator("|");
+                        self.add_plain(" ");
+                        self.add_type("Message");
+                        self.add_operator("::");
+                        self.add_plain("Noop");
+                    }
+                    self.add_plain(")");
+                    self.indent_level -= 1;
+                }
+                
+                if props.combobox_use_on_option_hovered {
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_option_hovered");
+                    self.add_plain("(");
+                    if use_self {
+                        self.add_type("Message");
+                        self.add_operator("::");
+                        self.add_plain(&format!("{}OnOptionHovered", to_pascal_case(&name)));
+                    } else {
+                        self.add_operator("|");
+                        self.add_identifier("_");
+                        self.add_operator("|");
+                        self.add_plain(" ");
+                        self.add_type("Message");
+                        self.add_operator("::");
+                        self.add_plain("Noop");
+                    }
+                    self.add_plain(")");
+                    self.indent_level -= 1;
+                }
+                
+                if props.combobox_use_on_open {
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_open");
+                    self.add_plain("(");
+                    if use_self {
+                        self.add_type("Message");
+                        self.add_operator("::");
+                        self.add_plain(&format!("{}OnOpen", to_pascal_case(&name)));
+                    } else {
+                        self.add_type("Message");
+                        self.add_operator("::");
+                        self.add_plain("Noop");
+                    }
+                    self.add_plain(")");
+                    self.indent_level -= 1;
+                }
+                
+                if props.combobox_use_on_close {
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_close");
+                    self.add_plain("(");
+                    if use_self {
+                        self.add_type("Message");
+                        self.add_operator("::");
+                        self.add_plain(&format!("{}OnClose", to_pascal_case(&name)));
+                    } else {
+                        self.add_type("Message");
+                        self.add_operator("::");
+                        self.add_plain("Noop");
+                    }
+                    self.add_plain(")");
+                    self.indent_level -= 1;
+                }
+                
+                self.generate_combobox_properties(props);
+            }
+            
+            WidgetType::Markdown => {
+/*                self.add_indent();
+                self.add_keyword("let");
+                self.add_plain(" items = ");
+                self.add_function("markdown::parse");
+                self.add_plain("(");
+                self.add_string(&format!("\"{}\"", props.markdown_source.replace("\"", "\\\"")));
+                self.add_plain(");");
+                self.add_newline();
+                self.add_indent();
+                self.add_function("markdown::view");
+                self.add_plain("(");
+                self.add_operator("&");
+                self.add_plain("items, ");
+                self.add_newline();
+                self.indent_level += 1;
+                self.add_indent();
+                self.add_type("markdown::Settings");
+                self.add_plain(" {");
+                self.add_newline();
+                 self.indent_level += 1;
+                
+                self.add_indent();
+                self.add_plain("link_color: Some(");
+                self.add_color(props.markdown_link_color);
+                self.add_plain("),");
+                self.add_newline();
+                
+                self.add_indent();
+                self.add_plain("link_underline: ");
+                self.add_keyword(if props.markdown_link_underline { "true" } else { "false" });
+                self.add_plain(",");
+                self.add_newline();
+                
+                self.add_indent();
+                self.add_plain("code_color: Some(");
+                self.add_color(props.markdown_code_color);
+                self.add_plain("),");
+                self.add_newline();
+                
+                self.add_indent();
+                self.add_plain("block_spacing: ");
+                self.add_number(&format!("{}", props.markdown_block_spacing));
+                self.add_plain(",");
+                self.add_newline();
+                
+                self.indent_level -= 1;
+                self.add_indent();
+                self.add_plain("}");
+                self.add_newline();
+                self.indent_level -= 1;
+                self.add_indent();
+                self.add_plain(")");
+                self.generate_markdown_properties(props);
+*/
+            }
+            
+            WidgetType::MouseArea => {
+                self.add_indent();
+                self.add_function("mouse_area");
+                self.add_plain("(");
+                self.add_newline();
+                self.indent_level += 1;
+                
+                if widget.children.is_empty() {
+                    self.add_indent();
+                    self.add_function("container");
+                    self.add_plain("(");
+                    self.add_function("text");
+                    self.add_plain("(");
+                    self.add_string("\"Content\"");
+                    self.add_plain("))");
+                } else {
+                    self.generate_widget_creation(&widget.children[0], use_self);
+                }
+                
+                self.add_newline();
+                self.indent_level -= 1;
+                self.add_indent();
+                self.add_plain(")");
+                self.add_newline();
+                self.indent_level += 1;
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("on_press");
+                self.add_plain("(");
+                self.add_type("Message");
+                self.add_operator("::");
+                self.add_plain("MousePressed)");
+                self.indent_level -= 1;
+            }
+            
+            WidgetType::QRCode => {
+                self.add_indent();
+                self.add_type("qr_code::QRCode");
+                self.add_operator("::");
+                self.add_function("new");
+                self.add_plain("(");
+                self.add_string(&format!("\"{}\"", props.qrcode_data));
+                self.add_plain(")");
+                self.add_newline();
+                self.indent_level += 1;
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("cell_size");
+                self.add_plain("(");
+                self.add_number(&format!("{}", props.qrcode_cell_size));
+                self.add_plain(")");
+                self.generate_qrcode_properties(props);
+                self.indent_level -= 1;
+            }
+            
+            WidgetType::Stack => {
+                self.add_indent();
+                self.add_function("stack");
+                self.add_plain("(vec![");
+                self.add_newline();
+                self.indent_level += 1;
+                
+                if widget.children.is_empty() {
+                    self.add_indent();
+                    self.add_function("text");
+                    self.add_plain("(");
+                    self.add_string("\"Layer 1\"");
+                    self.add_plain(").into(),");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_function("text");
+                    self.add_plain("(");
+                    self.add_string("\"Layer 2\"");
+                    self.add_plain(").into(),");
+                } else {
+                    for (i, child) in widget.children.iter().enumerate() {
+                        self.generate_widget_creation(child, use_self);
+                        self.add_operator(".");
+                        self.add_function("into");
+                        self.add_plain("()");
+                        if i < widget.children.len() - 1 {
+                            self.add_plain(",");
+                        }
+                        self.add_newline();
+                    }
+                }
+                
+                self.indent_level -= 1;
+                self.add_indent();
+                self.add_plain("])");
+                self.generate_stack_properties(props);
+            }
+            
+            WidgetType::Themer => {
+                self.add_indent();
+                self.add_function("themer");
+                self.add_plain("(");
+                if let Some(theme) = &props.themer_theme {
+                    self.add_plain("Some(");
+                    self.add_type("Theme");
+                    self.add_operator("::");
+                    match theme {
+                        Theme::Light => self.add_plain("Light"),
+                        Theme::Dark => self.add_plain("Dark"),
+                        Theme::Dracula => self.add_plain("Dracula"),
+                        Theme::Nord => self.add_plain("Nord"),
+                        _ => self.add_plain("Dark"),
+                    }
+                    self.add_plain(")");
+                } else {
+                    self.add_plain("None");
+                }
+                self.add_plain(", ");
+                self.add_newline();
+                self.indent_level += 1;
+                
+                if widget.children.is_empty() {
+                    self.add_indent();
+                    self.add_function("container");
+                    self.add_plain("(");
+                    self.add_function("text");
+                    self.add_plain("(");
+                    self.add_string("\"Themed content\"");
+                    self.add_plain("))");
+                } else {
+                    for child in &widget.children {
+                        self.generate_widget_creation(child, use_self);
+                    }
+                }
+                
+                self.add_newline();
+                self.indent_level -= 1;
+                self.add_indent();
+                self.add_plain(")");
+                self.generate_themer_properties(props);
+            } 
+            WidgetType::Pin => {
+            //    todo!("implement code gen for pin");
             }
         }
     }
@@ -1992,40 +2829,28 @@ impl<'a> CodeGenerator<'a> {
         // Width
         if !matches!(props.width, Length::Fill) {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("width");
             self.add_plain("(");
             self.add_length(props.width);
             self.add_plain(")");
-            self.indent_level -= 1;
         }
         
         // Height
         if !matches!(props.height, Length::Fill) {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("height");
             self.add_plain("(");
             self.add_length(props.height);
             self.add_plain(")");
-            self.indent_level -= 1;
         }
         
         // Padding
         if props.padding != Padding::ZERO {
-            self.add_newline();
-            self.indent_level += 1;
-            self.add_indent();
-            self.add_operator(".");
-            self.add_function("padding");
-            self.add_plain("(");
-            self.add_number(&format!("{}", props.padding.top));
-            self.add_plain(")");
-            self.indent_level -= 1;
+            self.generate_padding(&props.padding);
         }
     }
 
@@ -2033,27 +2858,23 @@ impl<'a> CodeGenerator<'a> {
         // Spacing
         if props.spacing != 0.0 {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("spacing");
             self.add_plain("(");
             self.add_number(&format!("{}", props.spacing));
             self.add_plain(")");
-            self.indent_level -= 1;
         }
         
         // Width
         if !matches!(props.width, Length::Shrink) {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("width");
             self.add_plain("(");
             self.add_length(props.width);
             self.add_plain(")");
-            self.indent_level -= 1;
         }
         
         // Height
@@ -2070,16 +2891,8 @@ impl<'a> CodeGenerator<'a> {
         }
 
         // Padding
-        if props.padding != Padding::new(0.0) {
-            self.add_newline();
-            self.indent_level += 1;
-            self.add_indent();
-            self.add_operator(".");
-            self.add_function("padding");
-            self.add_plain("(");
-            self.add_number(&format!("{}", props.padding.top));
-            self.add_plain(")");
-            self.indent_level -= 1;
+        if props.padding != Padding::ZERO {
+            self.generate_padding(&props.padding);
         }
     }
 
@@ -2151,15 +2964,7 @@ impl<'a> CodeGenerator<'a> {
 
         // Padding
         if props.padding != (Padding { top: 5.0, bottom: 5.0, right: 10.0, left: 10.0 }) {
-            self.add_newline();
-            self.indent_level += 1;
-            self.add_indent();
-            self.add_operator(".");
-            self.add_function("padding");
-            self.add_plain("(");
-            self.add_number(&format!("{}", props.padding.top));
-            self.add_plain(")");
-            self.indent_level -= 1;
+            self.generate_padding(&props.padding);
         }
     }
 
@@ -2443,15 +3248,7 @@ impl<'a> CodeGenerator<'a> {
         }
 
         if props.padding != (Padding { top: 5.0, bottom: 5.0, right: 10.0, left: 10.0 }) {
-            self.add_newline();
-            self.indent_level += 1;
-            self.add_indent();
-            self.add_operator(".");
-            self.add_function("padding");
-            self.add_plain("(");
-            self.add_number(&format!("{}", props.padding.top));
-            self.add_plain(")");
-            self.indent_level -= 1;
+            self.generate_padding(&props.padding);
         }
     }
     
@@ -2510,29 +3307,55 @@ impl<'a> CodeGenerator<'a> {
     }
     
     fn generate_space_properties(&mut self, props: &Properties) {
-        if !matches!(props.width, Length::Fill) {
-            self.add_newline();
-            self.indent_level += 1;
-            self.add_indent();
-            self.add_operator(".");
-            self.add_function("width");
-            self.add_plain("(");
-            self.add_length(props.width);
-            self.add_plain(")");
-            self.indent_level -= 1;
+        match props.orientation {
+            Orientation::Horizontal => {
+                if !matches!(props.width, Length::Fill) {
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("width");
+                    self.add_plain("(");
+                    self.add_length(props.width);
+                    self.add_plain(")");
+                    self.indent_level -= 1;
+                }
+                
+                if !matches!(props.height, Length::Shrink) {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("height");
+                    self.add_plain("(");
+                    self.add_length(props.height);
+                    self.add_plain(")");
+                }
+            }
+            Orientation::Vertical => {
+                if !matches!(props.width, Length::Shrink) {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("width");
+                    self.add_plain("(");
+                    self.add_length(props.width);
+                    self.add_plain(")");
+                }
+                
+                if !matches!(props.height, Length::Fill) {
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("height");
+                    self.add_plain("(");
+                    self.add_length(props.height);
+                    self.add_plain(")");
+                    self.indent_level -= 1;
+                }
+            }
         }
-        
-        if !matches!(props.height, Length::Fill) {
-            self.add_newline();
-            self.indent_level += 1;
-            self.add_indent();
-            self.add_operator(".");
-            self.add_function("height");
-            self.add_plain("(");
-            self.add_length(props.height);
-            self.add_plain(")");
-            self.indent_level -= 1;
-        }
+
     }
     
     fn generate_image_properties(&mut self, props: &Properties) {
@@ -2629,6 +3452,177 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
+    fn generate_combobox_properties(&mut self, props: &Properties) {
+        if props.combobox_size != 16.0 {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("size");
+            self.add_plain("(");
+            self.add_number(&format!("{}", props.combobox_size));
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+        
+        if !matches!(props.width, Length::Fill) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("width");
+            self.add_plain("(");
+            self.add_length(props.width);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+    }
+
+    fn generate_markdown_properties(&mut self, props: &Properties) {
+        if !matches!(props.width, Length::Fill) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("width");
+            self.add_plain("(");
+            self.add_length(props.width);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+        
+        if !matches!(props.height, Length::Shrink) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("height");
+            self.add_plain("(");
+            self.add_length(props.height);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+    }
+
+    fn generate_qrcode_properties(&mut self, props: &Properties) {
+        if !matches!(props.width, Length::Shrink) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("width");
+            self.add_plain("(");
+            self.add_length(props.width);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+        
+        if !matches!(props.height, Length::Shrink) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("height");
+            self.add_plain("(");
+            self.add_length(props.height);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+    }
+
+    fn generate_stack_properties(&mut self, props: &Properties) {
+        if !matches!(props.width, Length::Fill) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("width");
+            self.add_plain("(");
+            self.add_length(props.width);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+        
+        if !matches!(props.height, Length::Fill) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("height");
+            self.add_plain("(");
+            self.add_length(props.height);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+    }
+
+    fn generate_themer_properties(&mut self, props: &Properties) {
+        if !matches!(props.width, Length::Shrink) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("width");
+            self.add_plain("(");
+            self.add_length(props.width);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+        
+        if !matches!(props.height, Length::Shrink) {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("height");
+            self.add_plain("(");
+            self.add_length(props.height);
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+    }
+
+    fn generate_padding(&mut self, padding: &Padding) {
+        // Check if all padding values are the same
+        if padding.top == padding.right 
+            && padding.top == padding.bottom 
+            && padding.top == padding.left {
+            // Use shorthand
+            self.add_newline();
+//            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("padding");
+            self.add_plain("(");
+            self.add_number(&format!("{:.1}", padding.top));
+            self.add_plain(")");
+//            self.indent_level -= 1;
+        } else {
+            // Generate full Padding struct
+            self.add_newline();
+//            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("padding");
+            self.add_plain("(");
+            self.add_type("Padding");
+            self.add_plain(" { ");
+            self.add_plain("top: ");
+            self.add_number(&format!("{:.1}", padding.top));
+            self.add_plain(", ");
+            self.add_plain("right: ");
+            self.add_number(&format!("{:.1}", padding.right));
+            self.add_plain(", ");
+            self.add_plain("bottom: ");
+            self.add_number(&format!("{:.1}", padding.bottom));
+            self.add_plain(", ");
+            self.add_plain("left: ");
+            self.add_number(&format!("{:.1}", padding.left));
+            self.add_plain(" })");
+//            self.indent_level -= 1;
+        }
+    }
+
     fn add_length(&mut self, length: Length) {
         match length {
             Length::Fill => {
@@ -2646,7 +3640,7 @@ impl<'a> CodeGenerator<'a> {
                 self.add_operator("::");
                 self.add_plain("Fixed");
                 self.add_plain("(");
-                self.add_number(&format!("{}", px));
+                self.add_number(&format!("{:.1}", px));
                 self.add_plain(")");
             }
             Length::FillPortion(p) => {
@@ -2692,6 +3686,21 @@ impl<'a> CodeGenerator<'a> {
         self.widget_counts.clear();
         self.widget_names.clear();
         self.collect_widget_names(&self.hierarchy.root().clone());
+    }
+
+    fn add_color(&mut self, color: Color) {
+        self.add_type("Color");
+        self.add_operator("::");
+        self.add_function("from_rgba");
+        self.add_plain("(");
+        self.add_number(&format!("{:.3}", color.r));
+        self.add_plain(", ");
+        self.add_number(&format!("{:.3}", color.g));
+        self.add_plain(", ");
+        self.add_number(&format!("{:.3}", color.b));
+        self.add_plain(", ");
+        self.add_number(&format!("{:.3}", color.a));
+        self.add_plain(")");
     }
 
     // Token helper methods

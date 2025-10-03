@@ -1,22 +1,27 @@
 use iced::{
     alignment::{Horizontal, Vertical}, widget::{
-        button, checkbox, column, container, rule::horizontal as horizontal_rule, space::horizontal as horizontal_space, pick_list, progress_bar, radio, row, scrollable, slider, text, text_input, toggler, rule::vertical as vertical_rule, vertical_slider, space::vertical as vertical_space, Space, tooltip, svg, image,
-    }, Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow, Theme, Vector, ContentFit
+        button, checkbox, column, container, space, pick_list, progress_bar, radio, row, scrollable, slider, text, text_input, toggler, rule, vertical_slider, Space, tooltip, svg, image, pin, stack, mouse_area, combo_box, qr_code, markdown, text_editor,
+    }, Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow, Theme, Vector, ContentFit, Point
 };
 use std::collections::HashSet;
+use uuid::Uuid;
 use crate::{widget::generic_overlay::overlay_button, widget_helper::styles::stylefn_builders};
 mod controls;
 use controls::*;
 mod styles;
 mod code_generator;
+mod views;
+use views::type_editor::{self, TypeEditorView};
+pub mod type_system;
+use type_system::TypeSystem;
 pub mod panegrid_dashboard;
-use code_generator::{CodeGenerator, build_code_view, build_code_view_with_height};
+use code_generator::{CodeGenerator, build_code_view_with_height};
 use widgets::tree::{tree_handle, branch, DropInfo, DropPosition, Branch};
 use iced::widget::themer;
 use crate::icon;
 
 // ============================================================================
-// CORE DATA STRUCTURES - Simplified ID-based approach
+// CORE DATA STRUCTURES
 // ============================================================================
 
 /// Unique identifier for widgets in the hierarchy
@@ -24,9 +29,20 @@ use crate::icon;
 pub enum PropertyChange {
     // Common properties
     WidgetName(String),
-    //ShowWidgetBounds(bool),
     Width(Length),
     Height(Length),
+
+    // Draft Properties
+    DraftFixedWidth(String),
+    DraftFixedHeight(String),
+    DraftFillPortionWidth(String),
+    DraftFillPortionHeight(String),
+
+    // Padding mode and convenience setters
+    PaddingMode(PaddingMode),
+    PaddingUniform(f32),       // Sets all sides to same value
+    PaddingVertical(f32),      // Sets top and bottom
+    PaddingHorizontal(f32),    // Sets left and right
     PaddingTop(f32),
     PaddingRight(f32),
     PaddingBottom(f32),
@@ -111,7 +127,7 @@ pub enum PropertyChange {
     PickListOptions(Vec<String>),
 
     // Rule properties
-    RuleOrientation(RuleOrientation),
+    Orientation(Orientation),
     RuleThickness(f32),
 
     // Scrollable properties
@@ -129,19 +145,172 @@ pub enum PropertyChange {
     TooltipText(String),
     TooltipPosition(TooltipPosition),
     TooltipGap(f32),
+
+    // ComboBox
+    ComboBoxPlaceholder(String),
+    ComboBoxSelected(Option<String>),
+    ComboBoxState(Vec<String>),
+    ComboBoxUseOnInput(bool),
+    ComboBoxUseOnOptionHovered(bool),
+    ComboBoxUseOnOpen(bool),
+    ComboBoxUseOnClose(bool),
+    ComboBoxSize(f32),
+    ComboBoxPadding(f32),
+    ComboBoxEnumId(Option<Uuid>),
+    
+    // Markdown
+    MarkdownContent(text_editor::Action),
+    MarkdownTextSize(f32),
+    
+    // QR Code
+    QRCodeData(String),
+    QRCodeCellSize(f32),
+    
+    // Themer
+    ThemerTheme(Option<Theme>),
+
+    //Do Nothing
+    Noop
 }
 
 // Helper function to apply property changes
-pub fn apply_property_change(properties: &mut Properties, change: PropertyChange) {
+pub fn apply_property_change(properties: &mut Properties, change: PropertyChange, type_system: &TypeSystem) {
     match change {
-        PropertyChange::Width(value) => properties.width = value,
-        PropertyChange::Height(value) => properties.height = value,
+        PropertyChange::Width(value) => {
+            properties.width = value;
+            properties.draft_fixed_width.clear();
+            properties.draft_fill_portion_width.clear();
+        }
+        
+        PropertyChange::Height(value) => {
+            properties.height = value;
+            properties.draft_fixed_height.clear();
+            properties.draft_fill_portion_height.clear();
+        }
         PropertyChange::AlignItems(value) => properties.align_items = value,
 
-        PropertyChange::PaddingTop(value)       => properties.padding.top = value,
-        PropertyChange::PaddingRight(value)     => properties.padding.right = value,
-        PropertyChange::PaddingBottom(value)    => properties.padding.bottom = value,
-        PropertyChange::PaddingLeft(value)      => properties.padding.left = value,  
+        PropertyChange::DraftFixedWidth(text) => {
+            properties.draft_fixed_width = text.clone();
+            if let Ok(px) = text.trim().parse::<f32>() {
+                if px >= 0.0 {
+                    properties.width = Length::Fixed(px);
+                }
+            }
+        }
+        PropertyChange::DraftFixedHeight(text) => {
+            properties.draft_fixed_height = text.clone();
+            if let Ok(px) = text.trim().parse::<f32>() {
+                if px >= 0.0 {
+                    properties.height = Length::Fixed(px);
+                }
+            }
+        }
+        PropertyChange::DraftFillPortionWidth(text) => {
+            properties.draft_fill_portion_width = text.clone();
+            if let Ok(p) = text.trim().parse::<u16>() {
+                if p >= 1 {
+                    properties.width = Length::FillPortion(p);
+                }
+            }
+        }
+        PropertyChange::DraftFillPortionHeight(text) => {
+            properties.draft_fill_portion_height = text.clone();
+            if let Ok(p) = text.trim().parse::<u16>() {
+                if p >= 1 {
+                    properties.height = Length::FillPortion(p);
+                }
+            }
+        }
+
+        PropertyChange::PaddingMode(mode) => {
+            let current = properties.padding;
+            properties.padding_mode = mode;
+
+            match mode {
+                PaddingMode::Uniform => {
+                    properties.padding = Padding::new(current.top);
+                }
+                PaddingMode::Symmetric => {
+                    properties.padding = Padding {
+                        top: current.top,
+                        right: current.left,
+                        bottom: current.top,
+                        left: current.left,
+                    };
+                }
+                PaddingMode::Individual => {}
+            }
+        }
+        
+        PropertyChange::PaddingUniform(value) => {
+            properties.padding_mode = PaddingMode::Uniform;
+            properties.padding = Padding::new(value);
+        }
+        
+        PropertyChange::PaddingVertical(value) => {
+            properties.padding_mode = PaddingMode::Symmetric;
+            properties.padding.top = value;
+            properties.padding.bottom = value;
+        }
+        
+        PropertyChange::PaddingHorizontal(value) => {
+            properties.padding_mode = PaddingMode::Symmetric;
+            properties.padding.left = value;
+            properties.padding.right = value;
+        }
+
+        PropertyChange::PaddingRight(value) => {
+            properties.padding.right = value;
+            match properties.padding_mode {
+                PaddingMode::Uniform => {
+                    properties.padding = Padding::new(value);
+                }
+                PaddingMode::Symmetric => {
+                    properties.padding.left = value;
+                }
+                PaddingMode::Individual => {}
+            }
+        }
+        
+        PropertyChange::PaddingBottom(value) => {
+            properties.padding.bottom = value;
+            match properties.padding_mode {
+                PaddingMode::Uniform => {
+                    properties.padding = Padding::new(value);
+                }
+                PaddingMode::Symmetric => {
+                    properties.padding.top = value;
+                }
+                PaddingMode::Individual => {}
+            }
+        }
+        
+        PropertyChange::PaddingLeft(value) => {
+            properties.padding.left = value;
+            match properties.padding_mode {
+                PaddingMode::Uniform => {
+                    properties.padding = Padding::new(value);
+                }
+                PaddingMode::Symmetric => {
+                    properties.padding.right = value;
+                }
+                PaddingMode::Individual => {}
+            }
+        }
+
+        PropertyChange::PaddingTop(value) => {
+            properties.padding.top = value;
+            match properties.padding_mode {
+                PaddingMode::Uniform => {
+                    properties.padding = Padding::new(value);
+                }
+                PaddingMode::Symmetric => {
+                    properties.padding.bottom = value;
+                }
+                PaddingMode::Individual => {}
+            }
+        }
+
         PropertyChange::Spacing(value)          => properties.spacing = value,
 
         PropertyChange::WidgetName(value) => properties.widget_name = value,
@@ -236,8 +405,10 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::PickListOptions(value)      => properties.picklist_options = value,
 
         // Rule properties
-        PropertyChange::RuleOrientation(v) => properties.rule_orientation = v,
         PropertyChange::RuleThickness(v)   => properties.rule_thickness  = v,
+
+        //Rule + Space properties
+        PropertyChange::Orientation(v) => properties.orientation = v,
 
         // Scrollable properties
         PropertyChange::ScrollableDirection(value)  => properties.scroll_dir = value,
@@ -256,21 +427,70 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::TooltipText(v)      => properties.tooltip_text = v,
         PropertyChange::TooltipPosition(v)  => properties.tooltip_position = v,
         PropertyChange::TooltipGap(v)       => properties.tooltip_gap = v,
+
+        PropertyChange::ComboBoxSelected(v) => properties.combobox_selected = v,
+        PropertyChange::ComboBoxPlaceholder(v) => properties.combobox_placeholder = v,
+        PropertyChange::ComboBoxState(v) => {
+            properties.combobox_options = v.clone();
+            // Recreate state with new options
+            properties.combobox_state = combo_box::State::new(v);
+        }
+        PropertyChange::ComboBoxUseOnInput(v) => properties.combobox_use_on_input = v,
+        PropertyChange::ComboBoxUseOnOptionHovered(v) => properties.combobox_use_on_option_hovered = v,
+        PropertyChange::ComboBoxUseOnOpen(v) => properties.combobox_use_on_open = v,
+        PropertyChange::ComboBoxUseOnClose(v) => properties.combobox_use_on_close = v,
+        PropertyChange::ComboBoxSize(v) => properties.combobox_size = v,
+        PropertyChange::ComboBoxPadding(v) => properties.combobox_padding = v,
+        PropertyChange::ComboBoxEnumId(id) => {
+            //Set referenced_enum Id
+            properties.referenced_enum = id;
+
+            //Update combo_box state from Enum
+            let state = if let Some(ref enum_id) = properties.referenced_enum {
+                if let Some(enum_def) = type_system.get_enum(enum_id.clone()) {
+                    let variants: Vec<String> = enum_def.variants.iter()
+                        .map(|v| v.name.clone())
+                        .collect();
+
+                    combo_box::State::new(variants)                  
+                } else { combo_box::State::new(vec![])}
+            } else { combo_box::State::new(vec![])};
+
+            properties.combobox_state = state;
+        }
+        
+        PropertyChange::MarkdownContent(action) => {
+                let is_edit = action.is_edit();
+
+                properties.markdown_source.perform(action);
+
+                if is_edit {
+                    properties.markdown_content = markdown::Content::parse(&properties.markdown_source.text()).items().to_vec();
+                }
+        },
+        PropertyChange::MarkdownTextSize(v) => properties.markdown_text_size = v,
+        
+        PropertyChange::QRCodeData(v) => properties.qrcode_data = v,
+        PropertyChange::QRCodeCellSize(v) => properties.qrcode_cell_size = v,
+        
+        PropertyChange::ThemerTheme(v) => properties.themer_theme = v,
+
+        PropertyChange::Noop => {},
         
         _ => {} // Placeholder for properties not implemented
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash,)]
 pub struct WidgetId(pub usize);
 
 /// Central widget hierarchy manager - Simplified to use only IDs
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone,)]
 pub struct WidgetHierarchy {
     root: Widget,
     selected_ids: HashSet<WidgetId>,
     next_id: usize,
-
+    common_properties: Option<CommonProperties>,
 }
 
 impl WidgetHierarchy {
@@ -282,6 +502,7 @@ impl WidgetHierarchy {
             root: Widget::new(root_type, WidgetId(0)),
             selected_ids,
             next_id: 1,
+            common_properties: None
         }
     }
     
@@ -298,6 +519,8 @@ impl WidgetHierarchy {
         self.selected_ids = ids.into_iter()
             .filter(|id| self.widget_exists(*id))
             .collect();
+        
+        self.common_properties = Some(self.get_common_properties());
     }
     
     pub fn get_single_selected(&self) -> Option<&Widget> {
@@ -365,13 +588,6 @@ pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> boo
 }
     
     pub fn add_child(&mut self, parent_id: WidgetId, widget_type: WidgetType) -> Result<WidgetId, String> {
-        // Check if parent previously had no children
-        let parent_was_empty = if let Some(parent) = self.get_widget_by_id(parent_id) {
-            parent.children.is_empty()
-        } else {
-            false
-        };
-
         if !self.can_add_child(parent_id, widget_type) {
             if parent_id == self.root.id {
                 if self.root.children.is_empty() {
@@ -468,7 +684,7 @@ pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> boo
         find_parent(&self.root, child_id)
     }
 
-    pub fn apply_property_change(&mut self, id: WidgetId, mut change: PropertyChange) {
+    pub fn apply_property_change(&mut self, id: WidgetId, change: PropertyChange, type_system: &TypeSystem) {
         // Special handling for scrollable direction changes
         if let PropertyChange::ScrollableDirection(new_dir) = change.clone() {
             if let Some(widget) = self.get_widget_by_id_mut(id) {
@@ -522,7 +738,7 @@ pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> boo
         }
         
         if let Some(widget) = self.get_widget_by_id_mut(id) {
-            apply_property_change(&mut widget.properties, change);
+            apply_property_change(&mut widget.properties, change, type_system);
         }
     }
 
@@ -579,7 +795,7 @@ pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> boo
 
         // Detach node from current parent
         let old_parent_id = self.find_parent_id(id).ok_or("Old parent not found")?;
-        let mut node = self.remove_and_return(id).ok_or("Failed to detach node")?;
+        let node = self.remove_and_return(id).ok_or("Failed to detach node")?;
 
         // If moving within the same parent and we removed a lower index, fix target index
         if old_parent_id == new_parent_id {
@@ -663,7 +879,6 @@ pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> boo
         // If we just became a Scrollable, clamp subtree.
         if let Some(w) = self.get_widget_by_id(id) {
             if matches!(w.widget_type, WidgetType::Scrollable) {
-                drop(w);
                 self.sanitize_subtree_for_scrollable(id);
                 return;
             }
@@ -673,21 +888,6 @@ pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> boo
         if matches!(old_type, WidgetType::Scrollable) {
             self.restore_subtree_after_scrollable(id);
         }
-    }
-
-    // Is there a Scrollable anywhere above this node?
-    pub fn has_scrollable_ancestor(&self, mut id: WidgetId) -> bool {
-        while let Some(parent_id) = self.find_parent_id(id) {
-            if let Some(parent) = self.get_widget_by_id(parent_id) {
-                if matches!(parent.widget_type, WidgetType::Scrollable) {
-                    return true;
-                }
-                id = parent_id;
-            } else {
-                break;
-            }
-        }
-        false
     }
 
     // Get the scrollable direction of the nearest scrollable ancestor (if any)
@@ -797,62 +997,228 @@ pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> boo
         }
     }
 
-    pub fn can_drop_at(&self, dragged_id: WidgetId, target_id: WidgetId, position: &DropPosition) -> bool {
-        // Can't drop onto self
-        if dragged_id == target_id {
-            return false;
+    /// Validates that all selected widgets can be wrapped together
+    pub fn validate_wrapping(&self) -> Result<WidgetId, String> {
+        // Need at least one widget selected
+        if self.selected_ids.is_empty() {
+            return Err("No widgets selected".to_string());
         }
         
-        // Can't move root
-        if dragged_id == self.root.id {
-            return false;
+        // Can't wrap root
+        if self.selected_ids.contains(&self.root.id) {
+            return Err("Cannot wrap root widget".to_string());
         }
         
-        // Get the first child of root if it exists
-        let first_child_of_root = self.root.children.first().map(|c| c.id);
-        
-        // Can't move the first child of root
-        if Some(dragged_id) == first_child_of_root {
-            return false;
+        // All selected widgets must share the same parent
+        let parent_ids: std::collections::HashSet<_> = self.selected_ids
+            .iter()
+            .filter_map(|&id| self.find_parent_id(id))
+            .collect();
+            
+        if parent_ids.len() != 1 {
+            return Err("Selected widgets must have the same parent".to_string());
         }
         
-        match position {
-            DropPosition::Into => {
-                // Can't drop into root (it can only have one child)
-                if target_id == self.root.id {
-                    return false;
-                }
-                
-                // Check if target can have children
-                if let Some(target) = self.get_widget_by_id(target_id) {
-                    can_have_children(&target.widget_type)
-                } else {
-                    false
+        let parent_id = *parent_ids.iter().next().unwrap();
+        Ok(parent_id)
+    }
+
+    /// Wraps selected widgets in a new container
+    pub fn wrap_selected_in_container(
+        &mut self, 
+        container_type: WidgetType
+    ) -> Result<WidgetId, String> {
+        // Validate before making any changes
+        let parent_id = self.validate_wrapping()?;
+        
+        // Validation for tooltip - takes 2 children
+        if container_type == WidgetType::Tooltip && self.selected_ids.len() != 2 {
+            return Err("Tooltip takes 2 widgets selected".to_string());
+        }
+
+        // Validation for MouseArea - takes 1 child
+        if container_type == WidgetType::MouseArea && self.selected_ids.len() != 1 {
+            return Err("MouseArea takes 1 widget selected".to_string());
+        }
+        
+        // CRITICAL: Extract data from self before taking mutable borrow
+        let selected_ids = self.selected_ids.clone();
+        let wrapper_id = WidgetId(self.next_id);
+        self.next_id += 1;
+        
+        let parent = self.get_widget_by_id_mut(parent_id)
+            .ok_or("Parent not found")?;
+        
+        // Find indices of selected widgets in parent's children
+        let mut selected_indices: Vec<usize> = parent.children
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| selected_ids.contains(&child.id)) // Use cloned set
+            .map(|(i, _)| i)
+            .collect();
+        
+        if selected_indices.is_empty() {
+            return Err("No valid widgets to wrap".to_string());
+        }
+        
+        selected_indices.sort_unstable();  // Ensure consistent order
+        
+        // Extract the selected widgets (in order)
+        let first_index = selected_indices[0];
+        let mut widgets_to_wrap = Vec::new();
+        
+        // Remove in reverse order to maintain indices
+        for &idx in selected_indices.iter().rev() {
+            let widget = parent.children.remove(idx);
+            widgets_to_wrap.push(widget);
+        }
+        widgets_to_wrap.reverse();
+        
+        let mut wrapper = Widget::new(container_type, wrapper_id);
+        wrapper.children = widgets_to_wrap;
+        
+        parent.children.insert(first_index, wrapper);
+        
+        self.selected_ids.clear();
+        self.selected_ids.insert(wrapper_id);
+        
+        Ok(wrapper_id)
+    }
+    
+    /// Gets all widgets that are currently selected
+    pub fn get_selected_widgets(&self) -> Vec<&Widget> {
+        self.selected_ids
+            .iter()
+            .filter_map(|&id| self.get_widget_by_id(id))
+            .collect()
+    }
+    
+    /// Finds properties that are common across all selected widgets
+    pub fn get_common_properties(&self) -> CommonProperties {
+        let selected = self.get_selected_widgets();
+        
+        if selected.is_empty() {
+            return CommonProperties::default();
+        }
+        
+        // Start with all possible properties as "common"
+        // Then eliminate any that aren't shared by ALL selected widgets
+        CommonProperties::from_widgets(&selected)
+    }
+    
+    /// Applies a property change to all currently selected widgets
+    pub fn apply_property_to_all_selected(
+        &mut self, 
+        change: PropertyChange,
+        type_system: &TypeSystem
+    ) {
+        // Clone the selected IDs to avoid borrow checker issues
+        let selected_ids: Vec<WidgetId> = self.selected_ids.iter().copied().collect();
+        
+        for widget_id in selected_ids {
+            self.apply_property_change(widget_id, change.clone(), type_system);
+        }
+
+        match change {
+            // Height / Width
+            PropertyChange::Height(length) => {
+                if let Some(prop) = &mut self.common_properties {
+                    prop.uniform_height = Some(length);
                 }
             }
-            DropPosition::Before | DropPosition::After => {
-                // Can't drop as sibling to root
-                if target_id == self.root.id {
-                    return false;
+            PropertyChange::Width(width) => {
+                if let Some(prop) = &mut self.common_properties {
+                    prop.uniform_width = Some(width);
                 }
-                
-                // Can't drop as sibling to first child of root (root can only have one child)
-                if Some(target_id) == first_child_of_root {
-                    return false;
+            }
+            PropertyChange::DraftFixedHeight(height)=> {
+                if let Some(prop) = &mut self.common_properties {
+                    prop.draft_fixed_height = height;
                 }
-                
-                // Otherwise check if the parent can have children
-                if let Some(parent_id) = self.find_parent_id(target_id) {
-                    if let Some(parent) = self.get_widget_by_id(parent_id) {
-                        can_have_children(&parent.widget_type)
-                    } else {
-                        false
+            }
+            PropertyChange::DraftFillPortionHeight(height) => {
+                if let Some(prop) = &mut self.common_properties {
+                    prop.draft_fill_portion_height = height;
+                }
+            }
+            PropertyChange::DraftFixedWidth(width) => {
+                if let Some(prop) = &mut self.common_properties {
+                    prop.draft_fixed_width = width;
+                }
+            }
+            PropertyChange::DraftFillPortionWidth(width) => {
+                if let Some(prop) = &mut self.common_properties {
+                    prop.draft_fill_portion_width = width;
+                }
+            }
+
+            //Spacing
+            PropertyChange::Spacing(spacing) => {
+                if let Some(prop) = &mut self.common_properties {
+                    prop.uniform_spacing = Some(spacing);
+                }
+            }
+
+            // Padding
+            PropertyChange::PaddingMode(mode) => {
+                if let Some(prop) = &mut self.common_properties {
+                    prop.uniform_padding_mode = Some(mode);
+                }
+            }
+            PropertyChange::PaddingUniform(v) => {
+                if let Some(prop) = &mut self.common_properties {
+                    if let Some(padding) = &mut prop.uniform_padding {
+                        *padding = Padding::new(v);
                     }
-                } else {
-                    false
                 }
             }
+            PropertyChange::PaddingVertical(v) => {
+                if let Some(prop) = &mut self.common_properties {
+                    if let Some(padding) = &mut prop.uniform_padding {
+                        padding.top = v;
+                        padding.bottom = v;
+                    }
+                }
+            }
+            PropertyChange::PaddingHorizontal(v) => {
+                if let Some(prop) = &mut self.common_properties {
+                    if let Some(padding) = &mut prop.uniform_padding {
+                        padding.left = v;
+                        padding.right = v;
+                    }
+                }
+            }
+            PropertyChange::PaddingTop(v) => {
+                if let Some(prop) = &mut self.common_properties {
+                    if let Some(padding) = &mut prop.uniform_padding {
+                        padding.top = v;
+                    }
+                }
+            }
+            PropertyChange::PaddingBottom(v) => {
+                if let Some(prop) = &mut self.common_properties {
+                    if let Some(padding) = &mut prop.uniform_padding {
+                        padding.bottom = v;
+                    }
+                }
+            }
+            PropertyChange::PaddingLeft(v) => {
+                if let Some(prop) = &mut self.common_properties {
+                    if let Some(padding) = &mut prop.uniform_padding {
+                        padding.left = v;
+                    }
+                }
+            }
+            PropertyChange::PaddingRight(v) => {
+                if let Some(prop) = &mut self.common_properties {
+                    if let Some(padding) = &mut prop.uniform_padding {
+                        padding.right = v;
+                    }
+                }
+            }
+            _ => {}
         }
+
     }
 
 }
@@ -871,7 +1237,8 @@ pub struct WidgetVisualizer {
     left_pane: LeftPane,
     right_pane: RightPane,
     custom_themes: stylefn_builders::CustomThemes,
-
+    type_system: TypeSystem,
+    type_editor: TypeEditorView,
 }
 
 impl Default for WidgetVisualizer {
@@ -887,6 +1254,8 @@ impl Default for WidgetVisualizer {
             left_pane: LeftPane::Home,
             right_pane: RightPane::Preview,
             custom_themes: stylefn_builders::CustomThemes::new(&Theme::Light),
+            type_system: TypeSystem::new(),
+            type_editor: TypeEditorView::new(),
         }
     }
 }
@@ -977,7 +1346,26 @@ impl WidgetVisualizer {
             }
             
             Message::PropertyChanged(id, change) => {
-                self.hierarchy.apply_property_change(id, change);
+                self.hierarchy.apply_property_change(id, change.clone(), &self.type_system);
+
+                match self.hierarchy.get_widget_by_id(id) {
+                    Some(widget) => { 
+                        if widget.widget_type == WidgetType::Space {
+                            match change {
+                                PropertyChange::Orientation(Orientation::Horizontal) => {
+                                    self.hierarchy.apply_property_change(id, PropertyChange::Width(Length::Fill), &self.type_system);
+                                    self.hierarchy.apply_property_change(id, PropertyChange::Height(Length::Shrink), &self.type_system);
+                                }
+                                PropertyChange::Orientation(Orientation::Vertical) => {
+                                    self.hierarchy.apply_property_change(id, PropertyChange::Width(Length::Shrink), &self.type_system);
+                                    self.hierarchy.apply_property_change(id, PropertyChange::Height(Length::Fill), &self.type_system);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
 
             Message::SwapKind(id) => {
@@ -990,33 +1378,66 @@ impl WidgetVisualizer {
             }
             
             Message::TextInputChanged(id, value) => {
-                self.hierarchy.apply_property_change(id, PropertyChange::TextInputValue(value));
+                self.hierarchy.apply_property_change(id, PropertyChange::TextInputValue(value), &self.type_system);
             }
             
             Message::CheckboxToggled(id, checked) => {
-                self.hierarchy.apply_property_change(id, PropertyChange::CheckboxChecked(checked));
+                self.hierarchy.apply_property_change(id, PropertyChange::CheckboxChecked(checked), &self.type_system);
             }
             
             Message::RadioSelected(id, index) => {
-                self.hierarchy.apply_property_change(id, PropertyChange::RadioSelectedIndex(index));
+                self.hierarchy.apply_property_change(id, PropertyChange::RadioSelectedIndex(index), &self.type_system);
             }
             
             Message::SliderChanged(id, value) => {
-                self.hierarchy.apply_property_change(id, PropertyChange::SliderValue(value));
+                self.hierarchy.apply_property_change(id, PropertyChange::SliderValue(value), &self.type_system);
             }
             
             Message::TogglerToggled(id, active) => {
-                self.hierarchy.apply_property_change(id, PropertyChange::TogglerActive(active));
+                self.hierarchy.apply_property_change(id, PropertyChange::TogglerActive(active), &self.type_system);
             }
             
             Message::PickListSelected(id, index) => {
-                self.hierarchy.apply_property_change(id, PropertyChange::PickListSelected(Some(index)));
+                self.hierarchy.apply_property_change(id, PropertyChange::PickListSelected(Some(index)), &self.type_system);
             }
+
+            Message::ComboBoxOnInput(id, value) => {
+                let props = &self.hierarchy.get_widget_by_id(id).unwrap().properties;
+                if props.combobox_use_on_input {
+                    println!("combobox {:?} input text: {}", id, value);
+                }
+            }
+            Message::ComboBoxSelected(id, value) => {
+                println!("combobox selected: {:?}", value);
+                self.hierarchy.apply_property_change(id, PropertyChange::ComboBoxSelected(Some(value)), &self.type_system);
+            }
+            Message::ComboBoxOnOpen(id) => {
+                let props = &self.hierarchy.get_widget_by_id(id).unwrap().properties;
+                if props.combobox_use_on_open {
+                    println!("combobox {:?} opened!", id);
+                }
+            }
+            Message::ComboBoxOnClose(id) => {
+                let props = &self.hierarchy.get_widget_by_id(id).unwrap().properties;
+                if props.combobox_use_on_close {
+                    println!("combobox {:?} closed!", id);
+                }
+            }
+            Message::ComboBoxOnOptionHovered(id, options) => {
+                let props = &self.hierarchy.get_widget_by_id(id).unwrap().properties;
+                if props.combobox_use_on_option_hovered {
+                    println!("combobox option hovered: {:?}", options);
+                }
+            }
+            Message::Noop => {
+                // Do nothing - for preview-only interactions
+            }
+            Message::LinkClicked(url) => { println!("url clicked: {}", url) }
 
             Message::GenerateFullCode => {
                 // You could open this in a modal/overlay
                 // For now, we'll just log it
-                let mut generator = CodeGenerator::new(&self.hierarchy, self.theme.clone());
+                let mut generator = CodeGenerator::new(&self.hierarchy, self.theme.clone(), Some(&self.type_system));
                 let tokens = generator.generate_app_code();
                 let code = tokens.iter().map(|t| t.text.clone()).collect::<String>();
                 println!("Generated Code:\n{}", code);
@@ -1080,18 +1501,46 @@ impl WidgetVisualizer {
                 let task = self.custom_themes.update(msg);
                 return Action::Run(task.map(Message::ForwardThemeMessages));
             }
+
+            // User Defined Enums
+            Message::OpenTypeEditor => {
+                self.left_pane = LeftPane::Types;
+            }
+            Message::TypeEditor(msg) => {
+                let task = type_editor::update(msg, &mut self.type_system, &mut self.type_editor)
+                    .map(Message::TypeEditor);
+
+                return Action::Run(task);
+            }
+
+            Message::WrapSelectedInContainer(container_type) => {
+                match self.hierarchy.wrap_selected_in_container(container_type) {
+                    Ok(wrapper_id) => {
+                        println!("Successfully wrapped widgets in {:?} with id {:?}", 
+                                 container_type, wrapper_id);
+                    }
+                    Err(e) => {
+                        println!("Failed to wrap widgets: {}", e);
+                        // TODO: Show error to user (could add a status message field)
+                    }
+                }
+            }
+            
+            Message::BatchPropertyChanged(change) => {
+                self.hierarchy.apply_property_to_all_selected(change, &self.type_system);
+            }
         }
         
         Action::None
     }
     
-    pub fn view(&self) -> Element<Message> {
+    pub fn view<'a>(&'a self) -> Element<'a, Message> {
         let pane_selection_dock = self.build_pane_selection_dock();
         let left_panel = match self.left_pane {
             LeftPane::Home => self.build_left_panel(),
             LeftPane::Settings => self.build_settings(),
             LeftPane::Themes => self.custom_themes.view().map(Message::ForwardThemeMessages),
-            
+            LeftPane::Types => type_editor::view(&self.type_system, &self.type_editor).map(Message::TypeEditor)
         };
 
         let right_panel = match self.right_pane {
@@ -1107,28 +1556,30 @@ impl WidgetVisualizer {
     }
     
     fn build_left_panel<'a>(&'a self) -> Element<'a, Message> {
+        let multi_selection_ui = self.build_multi_selection_controls();
+
         column![
             // Header
             column![
                 text("Widget Visualizer").size(24),
-                horizontal_rule(5),
+                rule::horizontal(5),
             ].spacing(10).align_x(Alignment::Center),
-            Space::new().width(Length::Fill).height(10),
+            space::horizontal().height(10),
 
             // Theme selector
             row![
-                horizontal_space(),
+                space::horizontal(),
                 text("Theme").size(18),
                 pick_list(
                     Theme::ALL,
                     Some(self.theme.clone()),
                     Message::ThemeChanged,
                 ),
-                horizontal_space(),
+                space::horizontal(),
             ].width(Length::Fill).spacing(20),
-            Space::new().width(Length::Fill).height(10),
-            horizontal_rule(5),
-            Space::new().width(Length::Fill).height(10),
+            space::horizontal().height(10),
+            rule::horizontal(5),
+            space::horizontal().height(10),
             
             // Widget hierarchy
             column![
@@ -1137,17 +1588,15 @@ impl WidgetVisualizer {
                     self.widget_tree_view()
                 ).height(Length::Fill),
             ].spacing(5),
-            
-            // Add child controls - only show if single container selected
-            if let Some(selected_widget) = self.hierarchy.get_single_selected() {
-                if can_have_children(&selected_widget.widget_type) {
-                    self.build_add_child_controls(selected_widget.id)
-                } else {
-                    Element::from(column![])
-                }
-            } else {
-                Element::from(column![])
-            }
+
+            multi_selection_ui,
+
+           if let Some(selected_widget) = self.hierarchy.get_single_selected() {
+                self.build_add_child_controls(selected_widget.id)
+           } else {
+                self.build_add_child_controls(self.hierarchy.root.id)
+           }
+           
         ]
         .width(Length::Fixed(400.0))
         .padding(
@@ -1163,7 +1612,6 @@ impl WidgetVisualizer {
 
     fn build_pane_selection_dock<'a>(&self) -> Element<'a, Message> {
         container(
-//            row![
                 column![
                     button(icon::home().center())
                         .width(35)
@@ -1175,7 +1623,7 @@ impl WidgetVisualizer {
                             }
                         )
                         .on_press(Message::OpenHome),
-                    horizontal_rule(1).style(styles::rule::toolbar_rule),
+                    rule::horizontal(1).style(styles::rule::toolbar_rule),
 
                     button(icon::global().center())
                         .width(35)
@@ -1187,7 +1635,19 @@ impl WidgetVisualizer {
                             }
                         )
                         .on_press(Message::OpenWidgetVisualizerSettings),
-                    horizontal_rule(1).style(styles::rule::toolbar_rule),
+                    rule::horizontal(1).style(styles::rule::toolbar_rule),
+
+                    button(icon::type_icon().center())
+                        .width(35)
+                        .style(
+                            if self.left_pane == LeftPane::Types {
+                                styles::button::selected_text
+                            } else {
+                                button::text
+                            }
+                        )
+                        .on_press(Message::OpenTypeEditor),
+                    rule::horizontal(1).style(styles::rule::toolbar_rule),
 
                     button(icon::theme().center())
                         .width(35)
@@ -1199,7 +1659,7 @@ impl WidgetVisualizer {
                             }
                         )
                         .on_press(Message::OpenThemeEditor),
-                    horizontal_rule(2).style(styles::rule::toolbar_rule),
+                    rule::horizontal(2).style(styles::rule::toolbar_rule),
                     
                     button(icon::preview().center())
                         .width(35)
@@ -1211,7 +1671,7 @@ impl WidgetVisualizer {
                             }
                         )
                         .on_press(Message::OpenPreview),
-                    horizontal_rule(1).style(styles::rule::toolbar_rule),
+                    rule::horizontal(1).style(styles::rule::toolbar_rule),
 
                     button(icon::code().center())
                         .width(35)
@@ -1235,18 +1695,15 @@ impl WidgetVisualizer {
                         left: 5.0,
                     }
                 )
-//            ]
-//            .align_y(Alignment::Center)
-//            .padding(5)
         )
         .into()
     }
 
-    fn widget_tree_view(&self) -> Element<Message> {
+    fn widget_tree_view<'a>(&'a self) -> Element<'a, Message> {
         self.build_tree()
     }
 
-    fn build_tree(&self) -> Element<Message> {
+    fn build_tree<'a>(&'a self) -> Element<'a, Message> {
         let widget = self.hierarchy.root();
         let overlay_content = self.build_editor_for_widget(widget, widget.id);
 
@@ -1284,7 +1741,7 @@ impl WidgetVisualizer {
         let root = branch(
             row![
                 container(text(format!("{}", widget.name))).padding(5),
-                horizontal_space(),
+                space::horizontal(),
                 swap_button,
 
                 // Create overlay button with this widget's specific content
@@ -1317,7 +1774,10 @@ impl WidgetVisualizer {
 
     }
 
-    fn build_tree_item(&self, widget: &Widget) -> Branch<'_, Message, Theme, iced::Renderer> {        
+    fn build_tree_item(&self, widget: &Widget) -> Branch<'_, Message, Theme, iced::Renderer> {     
+
+        let is_selected = self.hierarchy.selected_ids().contains(&widget.id);
+        let selection_count = self.hierarchy.selected_ids().len();   
 
         let is_first_child_of_root = self.hierarchy.root().children.first()
         .map(|c| c.id == widget.id)
@@ -1352,6 +1812,25 @@ impl WidgetVisualizer {
                     None
                 };
 
+        let edit_button: Element<Message> = if selection_count == 1 {
+            // Original single-widget edit overlay
+            Some(overlay_button(
+                "Edit",
+                format!("Editing {}", widget.name),
+                self.build_editor_for_widget(widget, widget.id)
+            )
+            .overlay_width(500.0)
+            .overlay_height(750.0)
+            .style(button::primary)).into()
+        } else if is_selected {
+            // Show indicator that this is in batch selection
+            Some(button(text("✓ Selected"))
+                .style(button::secondary)).into()
+        } else {
+            Some(button(text("Edit"))
+                .style(button::text)).into()
+        };
+
         let mut children = Vec::new();
 
         for child in &widget.children {
@@ -1364,19 +1843,12 @@ impl WidgetVisualizer {
                 let content = row![
                         container(text(format!("{}", widget.name))).padding(5),
 
-                        horizontal_space(),
+                        space::horizontal(),
 
                         swap_button,
 
                         // Create overlay button with this widget's specific content
-                        overlay_button(
-                            "Edit",
-                            format!("Editing {}", widget.name),
-                            overlay_content
-                        )
-                        .overlay_width(500.0)
-                        .overlay_height(750.0)
-                        .style(button::primary),
+                        edit_button,
 
                         delete_button
                 ].spacing(5);
@@ -1401,7 +1873,7 @@ impl WidgetVisualizer {
                 let content = row![
                         container(text(format!("{}", widget.name))).padding(5),
 
-                        horizontal_space(),
+                        space::horizontal(),
 
                         swap_button,
 
@@ -1434,7 +1906,7 @@ impl WidgetVisualizer {
         branch
     }
     
-    fn build_add_child_controls(&self, parent_id: WidgetId) -> Element<Message> {
+    fn build_add_child_controls<'a>(&'a self, parent_id: WidgetId) -> Element<'a, Message> {
         let parent = self.hierarchy.get_widget_by_id(parent_id);
         if parent.is_none() {
             return column![].into();
@@ -1442,23 +1914,19 @@ impl WidgetVisualizer {
         let parent = parent.unwrap();
         
         let available_types = if parent_id == self.hierarchy.root().id {
-            // Root container constraints
             if self.hierarchy.root().children.is_empty() {
                 vec![WidgetType::Column, WidgetType::Row]
             } else {
-                vec![] // Root already has a child
+                vec![]
             }
         } else if parent.widget_type == WidgetType::Scrollable {
-            // Scrollable constraints
             if parent.children.is_empty() {
                 vec![WidgetType::Container, WidgetType::Column, WidgetType::Row]
             } else {
-                vec![] // Scrollable already has a child
+                vec![]
             }
-        } else if parent.widget_type == WidgetType::Container{
-            // Container constraints
+        } else if parent.widget_type == WidgetType::Container {
             if parent.children.is_empty() {
-                // Container can have any widget type, but only one
                 vec![
                     WidgetType::Container,
                     WidgetType::Scrollable,
@@ -1479,14 +1947,47 @@ impl WidgetVisualizer {
                     WidgetType::Image,
                     WidgetType::Svg,
                     WidgetType::Tooltip,
+                    WidgetType::ComboBox,
+                    WidgetType::Markdown,
+                    WidgetType::MouseArea,
+                    WidgetType::Pin,
+                    WidgetType::QRCode,
                 ]
             } else {
-                vec![] // Container already has a child
+                vec![]
             }
-        } else if parent.widget_type == WidgetType::Tooltip{
-            // Container constraints
+        } else if parent.widget_type == WidgetType::MouseArea {
+            if parent.children.is_empty() {
+                vec![
+                    WidgetType::Container,
+                    WidgetType::Scrollable,
+                    WidgetType::Row,
+                    WidgetType::Column,
+                    WidgetType::Button,
+                    WidgetType::Text,
+                    WidgetType::TextInput,
+                    WidgetType::Checkbox,
+                    WidgetType::Radio,
+                    WidgetType::Slider,
+                    WidgetType::VerticalSlider,
+                    WidgetType::ProgressBar,
+                    WidgetType::Toggler,
+                    WidgetType::PickList,
+                    WidgetType::Space,
+                    WidgetType::Rule,
+                    WidgetType::Image,
+                    WidgetType::Svg,
+                    WidgetType::Tooltip,
+                    WidgetType::ComboBox,
+                    WidgetType::Markdown,
+                    WidgetType::Pin,
+                    WidgetType::QRCode,
+                ]
+            } else {
+                vec![]
+            }
+        } else if parent.widget_type == WidgetType::Tooltip {
             if parent.children.len() < 2 {
-                // Container can have any widget type, but only one
                 vec![
                     WidgetType::Container,
                     WidgetType::Scrollable,
@@ -1504,12 +2005,16 @@ impl WidgetVisualizer {
                     WidgetType::PickList,
                     WidgetType::Image,
                     WidgetType::Svg,
+                    WidgetType::ComboBox,
+                    WidgetType::Markdown,
+                    WidgetType::MouseArea,
+                    WidgetType::Pin,
+                    WidgetType::QRCode,
                 ]
             } else {
-                vec![] // Container already has a child
+                vec![]
             }
-        } else {
-            // Regular containers (Row/Column) can have multiple children
+        } else if parent.widget_type == WidgetType::Row || parent.widget_type == WidgetType::Column {
             vec![
                 WidgetType::Container,
                 WidgetType::Scrollable,
@@ -1530,37 +2035,26 @@ impl WidgetVisualizer {
                 WidgetType::Image,
                 WidgetType::Svg,
                 WidgetType::Tooltip,
+                WidgetType::ComboBox,
+                WidgetType::Markdown,
+                WidgetType::MouseArea,
+                WidgetType::Pin,
+                WidgetType::QRCode,
             ]
+        } else {
+            vec![]
         };
         
-        if available_types.is_empty() {
-            let reason = if parent.widget_type == WidgetType::Container {
-                "Container can only have one child"
-            } else if parent.widget_type == WidgetType::Scrollable {
-                "Scrollable can only have one child"
-            } else if parent_id == self.hierarchy.root().id {
-                "Root container can only have one child"
-            } else {
-                "Cannot add more children"
-            };
-            
-            column![
-                text("Add Child Widget").size(14),
-                text(reason).size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-            ].spacing(5).into()
-        } else {
-            column![
-                text("Add Child Widget").size(14),
-                pick_list(
-                    available_types,
-                    None::<WidgetType>,
-                    move |widget_type| Message::AddChild(parent_id, widget_type),
-                )
-            ].spacing(5).into()
-        }
+        // Use the add_widgets view and map its messages
+        crate::widget_helper::views::add_widgets::view(parent_id, &available_types)
+            .map(move |msg| match msg {
+                crate::widget_helper::views::add_widgets::Message::SelectWidgetType(widget_type) => {
+                    Message::AddChild(parent_id, widget_type)
+                }
+            })
     }
-    
-    fn build_preview_panel(&self) -> Element<Message> {
+
+    fn build_preview_panel<'a>(&'a self) -> Element<'a, Message> {
         let widget_preview = self.build_widget_preview(self.hierarchy.root());
 
         let preview_scoped = themer(
@@ -1608,8 +2102,8 @@ impl WidgetVisualizer {
             )
             .spacing(20),
 
-            horizontal_rule(5),
-            Space::new().width(Length::Fill).height(10),
+            rule::horizontal(5),
+            space::horizontal().height(10),
 
             container(preview_scoped)
             .padding(5)
@@ -1709,24 +2203,8 @@ impl WidgetVisualizer {
                         content = content.push(self.build_widget_preview(child));
                     }
                 }
-                
-                // Add visual bounds indicator if enabled
-                let row_element: Element<_> = content.into();
-                if props.show_widget_bounds && !is_selected {
-                    container(row_element)
-                        .style(|_| container::Style {
-                            background: Some(Background::Color(Color::from_rgba(1.0, 0.5, 0.5, 0.05))),
-                            border: Border { 
-                                color: Color::from_rgba(1.0, 0.5, 0.5, 0.2), 
-                                width: 1.0, 
-                                radius: 2.0.into() 
-                            },
-                            ..Default::default()
-                        })
-                        .into()
-                } else {
-                    row_element
-                }
+
+                content.into()
             }
             
             WidgetType::Column => {
@@ -1746,23 +2224,7 @@ impl WidgetVisualizer {
                     }
                 }
 
-                // Add visual bounds indicator if enabled
-                let column_element: Element<_> = content.into();
-                if props.show_widget_bounds && !is_selected {
-                    container(column_element)
-                        .style(|_| container::Style {
-                            background: Some(Background::Color(Color::from_rgba(0.5, 0.5, 1.0, 0.05))),
-                            border: Border { 
-                                color: Color::from_rgba(0.5, 0.5, 1.0, 0.2), 
-                                width: 1.0, 
-                                radius: 2.0.into() 
-                            },
-                            ..Default::default()
-                        })
-                        .into()
-                } else {
-                    column_element
-                }
+                content.into()
             }
             
             WidgetType::Button => {
@@ -1925,7 +2387,10 @@ impl WidgetVisualizer {
             }
 
             WidgetType::Space => {
-                let s = vertical_space().width(props.width).height(props.height);
+                let s = match props.orientation {
+                    Orientation::Horizontal => space::horizontal().width(props.width).height(props.height),
+                    Orientation::Vertical => space::vertical().width(props.width).height(props.height),
+                };
 
                 if props.show_widget_bounds {
                     container(s)
@@ -1941,9 +2406,9 @@ impl WidgetVisualizer {
             }
 
             WidgetType::Rule => {
-                match props.rule_orientation {
-                    RuleOrientation::Horizontal => horizontal_rule(props.rule_thickness).into(),
-                    RuleOrientation::Vertical => vertical_rule(props.rule_thickness).into(),
+                match props.orientation {
+                    Orientation::Horizontal => rule::horizontal(props.rule_thickness).into(),
+                    Orientation::Vertical => rule::vertical(props.rule_thickness).into(),
                 }
             }
 
@@ -2021,59 +2486,192 @@ impl WidgetVisualizer {
                     .into()
             }
             
+            WidgetType::ComboBox => {
+                let id = widget.id;
+                let on_selected = move |selected| {
+                    Message::PropertyChanged(
+                        id,
+                        PropertyChange::ComboBoxSelected(Some(selected)),
+                    )
+                };
+
+                combo_box(
+                    &props.combobox_state, 
+                    &props.combobox_placeholder,
+                    props.combobox_selected.as_ref(), 
+                    on_selected
+                )
+                .on_close(Message::ComboBoxOnClose(id))
+                .on_input(move |search| Message::ComboBoxOnInput(id, search))
+                .on_open(Message::ComboBoxOnOpen(id))
+                .on_option_hovered(move |hovered| Message::ComboBoxOnOptionHovered(id, hovered))
+                .into()
+            }
+            
+            WidgetType::Markdown => {
+                
+                markdown::view(
+                    &props.markdown_content,
+                    markdown::Settings::with_text_size(
+                        props.markdown_text_size,
+                        self.theme.clone()
+                    )
+                ).map(Message::LinkClicked)
+            }
+            
+            WidgetType::MouseArea => {
+                let content = if widget.children.is_empty() {
+                    container(text("Mouse Area Content"))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .style(|_| container::Style {
+                            border: Border { 
+                                color: Color::from_rgba(0.5, 0.5, 0.5, 0.3), 
+                                width: 1.0, 
+                                radius: 4.0.into() 
+                            },
+                            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.05))),
+                            ..Default::default()
+                        })
+                        .into()
+                } else {
+                    self.build_widget_preview(&widget.children[0])
+                };
+                
+                mouse_area(content)
+                    .on_press(Message::Noop)
+                    .on_release(Message::Noop)
+                    .on_enter(Message::Noop)
+                    .on_exit(Message::Noop)
+                    .into()
+            }
+            
+            WidgetType::QRCode => {
+                use iced::widget::qr_code;
+                
+                match qr_code::Data::new(&props.qrcode_data) {
+                    Ok(data) => {
+                        // Store the QR data somewhere persistent, or create inline
+                        // For preview, we'll show a placeholder
+                        container(
+                            text(format!("QR: {}", props.qrcode_data))
+                                .size(12)
+                        )
+                        .width(Length::Fixed(200.0))
+                        .height(Length::Fixed(200.0))
+                        .style(|_| container::Style {
+                            border: Border { 
+                                color: Color::from_rgb(0.5, 0.5, 0.5), 
+                                width: 1.0, 
+                                radius: 4.0.into() 
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                    }
+                    Err(_) => {
+                        text("Invalid QR data").into()
+                    }
+                }
+            }
+            
+            WidgetType::Stack => {
+                let mut layers = Vec::new();
+                
+                if widget.children.is_empty() {
+                    layers.push(
+                        container(text("Stack Layer 1"))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .center(Length::Fill)
+                            .into()
+                    );
+                    layers.push(
+                        container(text("Stack Layer 2").color(Color::from_rgb(1.0, 0.0, 0.0)))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .padding(20)
+                            .into()
+                    );
+                } else {
+                    for child in &widget.children {
+                        layers.push(self.build_widget_preview(child));
+                    }
+                }
+                
+                stack(layers)
+                    .width(props.width)
+                    .height(props.height)
+                    .into()
+            }
+            
+            WidgetType::Themer => {
+                let content = if widget.children.is_empty() {
+                    container(text("Themed Content"))
+                        .padding(10)
+                        .into()
+                } else {
+                    let mut col = column![];
+                    for child in &widget.children {
+                        col = col.push(self.build_widget_preview(child));
+                    }
+                    col.into()
+                };
+                
+                if let Some(theme) = &props.themer_theme {
+                    themer(Some(theme.clone()), content).into()
+                } else {
+                    content
+                }
+            }
+
             _ => {
                 text(format!("{:?} preview", widget.widget_type)).into()
             }
         };
 
-        // Apply selection highlight (without padding to preserve dimensions)
         if is_selected && self.highlight_selected {
-            container(content)
-                .style(move |theme: &Theme| {
-                    let c = theme.extended_palette().primary.strong.color;
-                    container::Style {
-                        // No background to keep dimensions clear
-                        border: Border { 
-                            color: c, 
-                            width: 2.0, 
-                            radius: 4.0.into() 
-                        },
-                        ..Default::default()
-                    }
-                })
+            content.explain(self.theme.extended_palette().primary.strong.color)
                 .into()
         } else {
             content
         }
     }
     
-    fn build_editor_for_widget(&self, widget: &Widget, widget_id: WidgetId) -> Element<Message> {
+    fn build_editor_for_widget<'a>(&'a self, widget: &Widget, widget_id: WidgetId) -> Element<'a, Message> {
         let controls_view: Element<Message> = match widget.widget_type {
-            WidgetType::Container  => container_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Scrollable => scrollable_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Row       => row_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Column    => column_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Button    => button_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Text      => text_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::TextInput => text_input_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Checkbox  => checkbox_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Radio     => radio_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Toggler   => toggler_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::PickList  => picklist_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Slider     => slider_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::VerticalSlider     => vertical_slider_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Rule       => rule_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Space => space_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::ProgressBar => progress_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Image   => image_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Svg     => svg_controls(&self.hierarchy, widget_id, self.theme.clone()),
-            WidgetType::Tooltip => tooltip_controls(&self.hierarchy, widget_id, self.theme.clone()),
+            WidgetType::Container       => container_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Scrollable      => scrollable_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Row             => row_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Column          => column_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Button          => button_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Text            => text_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::TextInput       => text_input_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Checkbox        => checkbox_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Radio           => radio_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Toggler         => toggler_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::PickList        => picklist_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Slider          => slider_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::VerticalSlider  => vertical_slider_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Rule            => rule_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Space           => space_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::ProgressBar     => progress_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Image           => image_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Svg             => svg_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Tooltip         => tooltip_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::ComboBox        => combobox_controls(&self.hierarchy, widget_id, self.theme.clone(), &self.type_system),
+            WidgetType::Markdown        => markdown_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::MouseArea       => mousearea_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::QRCode          => qrcode_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Stack           => stack_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Themer          => themer_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
+            WidgetType::Pin             => pin_controls(&self.hierarchy, widget_id, self.theme.clone(), Some(&self.type_system)),
             _ => column![text("Editor not implemented for this widget type")].into(),
         };
 
         column![
             text(format!("Editing: {}", widget.name)).size(20),
-            horizontal_rule(5),
+            rule::horizontal(5),
             controls_view,
         ]
         .spacing(10)
@@ -2081,13 +2679,130 @@ impl WidgetVisualizer {
         .into()
     }
 
-    fn build_settings(&self) -> Element<Message> {
+    /// Builds controls that appear when multiple widgets are selected
+    fn build_multi_selection_controls<'a>(&'a self) -> Element<'a, Message> {
+        let selected_count = self.hierarchy.selected_ids().len();
+        
+        if selected_count <= 1 {
+            // No multi-selection controls needed
+            return column![].into();
+        }
+        
+        // Validate if wrapping is possible
+        let can_wrap = self.hierarchy.validate_wrapping().is_ok();
+        
+        column![
+            // Header showing selection count
+            text(format!("{} widgets selected", selected_count))
+                .size(16),
+            
+            rule::horizontal(2),
+            
+            // Wrapping controls
+            text("Wrap in:").size(14),
+            
+            column![
+                // Row wrapping button
+                button(text("Row"))
+                    .on_press_maybe(
+                        if can_wrap {
+                            Some(Message::WrapSelectedInContainer(WidgetType::Row))
+                        } else {
+                            None
+                        }
+                    )
+                    .width(Length::Fill),
+                
+                // Column wrapping button
+                button(text("Column"))
+                    .on_press_maybe(
+                        if can_wrap {
+                            Some(Message::WrapSelectedInContainer(WidgetType::Column))
+                        } else {
+                            None
+                        }
+                    )
+                    .width(Length::Fill),
+                
+                // MouseArea wrapping button
+                button(text("MouseArea"))
+                    .on_press_maybe(
+                        if can_wrap {
+                            Some(Message::WrapSelectedInContainer(WidgetType::MouseArea))
+                        } else {
+                            None
+                        }
+                    )
+                    .width(Length::Fill),
+                
+                // Container wrapping (for single widget only)
+                button(text("Container"))
+                    .on_press_maybe(
+                        if can_wrap && selected_count == 1 {
+                            Some(Message::WrapSelectedInContainer(WidgetType::Container))
+                        } else {
+                            None
+                        }
+                    )
+                    .width(Length::Fill),
+                
+                // Tooltip wrapping (requires exactly 2 widgets)
+                button(text("Tooltip (2 widgets only)"))
+                    .on_press_maybe(
+                        if can_wrap && selected_count == 2 {
+                            Some(Message::WrapSelectedInContainer(WidgetType::Tooltip))
+                        } else {
+                            None
+                        }
+                    )
+                    .width(Length::Fill),
+            ]
+            .spacing(5),
+            
+            rule::horizontal(2),
+            
+            // Batch edit button
+            text("Batch Edit:").size(14),
+            
+            // Create overlay for batch editing
+            overlay_button(
+                "Edit All Properties",
+                format!("Editing {} widgets", selected_count),
+                self.build_batch_editor()
+            )
+            .overlay_width(500.0)
+            .overlay_height(750.0)
+            .style(button::primary),
+            
+            // Show validation error if wrapping isn't possible
+            if !can_wrap {
+                container(
+                    text("Selected widgets must have the same parent")
+                        .size(12)
+                        .color(Color::from_rgb(0.8, 0.3, 0.3))
+                )
+                .padding(5)
+            } else {
+                container(space::horizontal())
+            }
+        ]
+        .spacing(10)
+        .padding(10)
+        .into()
+    }
+    
+    /// Builds the batch property editor overlay
+    fn build_batch_editor<'a>(&'a self) -> Element<'a, Message> {
+        batch_editor_controls(&self.hierarchy, self.theme.clone())
+    }
+
+    fn build_settings<'a>(&'a self) -> Element<'a, Message> {
         container(
             column![
                 // Header
                 column![
                     text("Global Settings and Defaults").size(24).center(),
-                    horizontal_rule(5),
+                    rule::horizontal(5),
                 ].spacing(10).align_x(Alignment::Center),
                 Space::new().width(Length::Fill).height(10),
 
@@ -2134,7 +2849,7 @@ impl WidgetVisualizer {
     }
 
     fn build_full_code_content(&self) -> Element<Message> {
-        let mut generator = CodeGenerator::new(&self.hierarchy, self.theme.clone());
+        let mut generator = CodeGenerator::new(&self.hierarchy, self.theme.clone(), Some(&self.type_system));
         generator.set_app_name(self.app_name.clone());
         generator.set_window_title(self.app_window_title.clone());
         let tokens = generator.generate_app_code();
@@ -2146,7 +2861,7 @@ impl WidgetVisualizer {
             // Header with copy button
             row![
                 text("Complete Iced Application Code").size(20),
-                horizontal_space(),
+                space::horizontal(),
                 tooltip(
                     button(icon::copy())
                         .style(button::text)
@@ -2167,7 +2882,7 @@ impl WidgetVisualizer {
             )
             .spacing(20),
             
-            horizontal_rule(5),
+            rule::horizontal(5),
             Space::new().width(Length::Fill).height(10),
             
             container(
@@ -2195,6 +2910,7 @@ impl WidgetVisualizer {
             self.debug_print_widget(child, depth + 1);
         }
     }
+
 }
 
 // ============================================================================
@@ -2221,6 +2937,13 @@ pub enum Message {
     SliderChanged(WidgetId, f32),
     TogglerToggled(WidgetId, bool),
     PickListSelected(WidgetId, String),
+    ComboBoxOnInput(WidgetId, String),
+    ComboBoxSelected(WidgetId, String),
+    ComboBoxOnOptionHovered(WidgetId, String),
+    ComboBoxOnClose(WidgetId),
+    ComboBoxOnOpen(WidgetId),
+    LinkClicked(markdown::Url),
+    Noop,
 
     // Theme, not sure I'm going to implement this with the theme builder in the same app
     ThemeChanged(Theme),
@@ -2245,7 +2968,17 @@ pub enum Message {
     OutlineSelectedWidgetsToggled(bool),
 
     //Send Messages to Stylefn_Builder
-    ForwardThemeMessages(stylefn_builders::Message)
+    ForwardThemeMessages(stylefn_builders::Message),
+
+    // Type system messages
+    TypeEditor(type_editor::Message),
+    OpenTypeEditor,
+
+    // Wrapping operations
+    WrapSelectedInContainer(WidgetType),  // Wraps selection in Row/Column/MouseArea/Tooltip
+    
+    // Batch editing operations  
+    BatchPropertyChanged(PropertyChange), // Applies property to all selected widgets
 }
 
 pub enum Action {
@@ -2254,10 +2987,10 @@ pub enum Action {
 }
 
 // ============================================================================
-// WIDGET STRUCTURES - Keep as-is, these are good
+// WIDGET STRUCTURES
 // ============================================================================
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone,)]
 pub struct Widget {
     pub id: WidgetId,
     pub widget_type: WidgetType,
@@ -2278,7 +3011,7 @@ impl Widget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq,)]
 pub enum WidgetType {
     Container,
     Scrollable,
@@ -2299,6 +3032,13 @@ pub enum WidgetType {
     Image,
     Svg,
     Tooltip,
+    ComboBox,
+    Markdown,
+    MouseArea,
+    QRCode,
+    Stack,
+    Themer,
+    Pin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2306,6 +3046,7 @@ enum LeftPane {
     Home,
     Settings,
     Themes,
+    Types,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2315,7 +3056,7 @@ enum RightPane {
 }
 
 // ============================================================================
-// HELPER FUNCTIONS - Keep these, they're useful
+// HELPER FUNCTIONS
 // ============================================================================
 
 fn parse_length(value: &str) -> Length {
@@ -2344,22 +3085,31 @@ pub fn length_to_string(length: Length) -> String {
         Length::Shrink => "Shrink".to_string(),
         Length::Fixed(pixels) => format!("{}", pixels),
         Length::FillPortion(p) => format!("FillPortion({p})"),
-        _ => "Shrink".to_string(),
     }
 }
 
 fn can_have_children(widget_type: &WidgetType) -> bool {
     matches!(
         widget_type,
-        WidgetType::Container | WidgetType::Row | WidgetType::Column | WidgetType::Scrollable | WidgetType::Tooltip
+        WidgetType::Container | WidgetType::Row | WidgetType::Column | 
+        WidgetType::Scrollable | WidgetType::Tooltip | 
+        WidgetType::Stack | WidgetType::Themer | WidgetType::MouseArea
     )
 }
+
 
 #[derive(Debug, Clone)]
 pub struct Properties {
     pub width: Length,
     pub height: Length,
     pub padding: Padding,
+
+    //draft state for text_inputs
+    pub draft_fixed_width: String,
+    pub draft_fixed_height: String,
+    pub draft_fill_portion_width: String,
+    pub draft_fill_portion_height: String,
+    pub padding_mode: PaddingMode,
     
     // Container properties
     pub align_x: ContainerAlignX,
@@ -2444,21 +3194,51 @@ pub struct Properties {
     pub anchor_y: iced::widget::scrollable::Anchor,
 
     // Rule properties
-    pub rule_orientation: RuleOrientation,
     pub rule_thickness: f32,
 
-    // Image
+    // Rule + Space properties
+    pub orientation: Orientation,
+
+    // Image properties
     pub image_path: String,
     pub image_fit: ContentFitChoice,
 
-    // Svg
+    // Svg prroperties
     pub svg_path: String,
     pub svg_fit: ContentFitChoice,
 
-    // Tooltip
+    // Tooltip properties
     pub tooltip_text: String,
     pub tooltip_position: TooltipPosition,
     pub tooltip_gap: f32,
+
+    // ComboBox properties
+    pub combobox_state: combo_box::State<String>,
+    pub combobox_placeholder: String,
+    pub combobox_selected: Option<String>,
+    pub combobox_options: Vec<String>,
+    pub combobox_size: f32,
+    pub combobox_padding: f32,
+    pub combobox_use_on_input: bool,
+    pub combobox_use_on_option_hovered: bool,
+    pub combobox_use_on_open: bool,
+    pub combobox_use_on_close: bool,
+    pub referenced_enum: Option<Uuid>,
+    
+    // Markdown properties
+    pub markdown_content: Vec<markdown::Item>,
+    pub markdown_source: text_editor::Content,
+    pub markdown_text_size: f32,
+
+    // QR Code properties
+    pub qrcode_data: String,
+    pub qrcode_cell_size: f32,
+
+    // Themer properties
+    pub themer_theme: Option<Theme>,
+
+    // Pin properties
+    pub pin_point: Point,
 
     pub show_widget_bounds: bool,
     pub widget_name: String,
@@ -2473,6 +3253,13 @@ impl Default for Properties {
             width: Length::Fill,
             height: Length::Fill,
             padding: Padding::new(0.0),
+
+            // Draft properties
+            draft_fixed_width: String::new(),
+            draft_fixed_height: String::new(),
+            draft_fill_portion_width: String::new(),
+            draft_fill_portion_height: String::new(),
+            padding_mode: PaddingMode::Uniform,
             
             // Container defaults
             border_width: 1.0,
@@ -2566,8 +3353,10 @@ impl Default for Properties {
             anchor_y: iced::widget::scrollable::Anchor::default(),
 
             // Rule defaults
-            rule_orientation: RuleOrientation::Horizontal,
             rule_thickness: 5.0,
+
+            // Rule + Space Orientation
+            orientation: Orientation::Horizontal,
 
             // Image defaults
             image_path: String::new(),
@@ -2581,6 +3370,43 @@ impl Default for Properties {
             tooltip_text: "Tooltip".to_string(),
             tooltip_position: TooltipPosition::Top,
             tooltip_gap: 0.0,
+
+            // ComboBox defaults
+            combobox_state: combo_box::State::new(vec![
+                "Option 1".to_string(),
+                "Option 2".to_string(),
+                "Option 3".to_string(),
+            ]),
+
+            combobox_selected: None,
+            combobox_placeholder: "Type to search...".to_string(),
+            combobox_options: vec![
+                "Option 1".to_string(),
+                "Option 2".to_string(),
+                "Option 3".to_string(),
+            ],
+            combobox_use_on_input: false,
+            combobox_use_on_option_hovered: false,
+            combobox_use_on_open: false,
+            combobox_use_on_close: false,
+            combobox_size: 16.0,
+            combobox_padding: 5.0,
+            referenced_enum: None,
+
+            // Markdown defaults
+            markdown_content: Vec::new(),
+            markdown_source: text_editor::Content::with_text(""),
+            markdown_text_size: 16.0,
+            
+            // QR Code defaults
+            qrcode_data: "https://example.com".to_string(),
+            qrcode_cell_size: 4.0,
+            
+            // Themer defaults
+            themer_theme: None,
+
+            //Pin defaults
+            pin_point: Point::ORIGIN,
 
             show_widget_bounds: false,
             widget_name: String::new(),
@@ -2614,6 +3440,7 @@ impl Properties {
                 props.text_content = "Click Me!".to_string();
                 props.width = Length::Shrink;
                 props.height = Length::Shrink;
+                props.padding_mode = PaddingMode::Individual;
                 props.padding = Padding { top: 5.0, bottom: 5.0, right: 10.0, left: 10.0 };
             }
             WidgetType::Text => {
@@ -2640,11 +3467,13 @@ impl Properties {
                 props.width = Length::Shrink;
             }
             WidgetType::PickList => {
+                props.padding_mode = PaddingMode::Individual;
                 props.padding = Padding { top: 5.0, bottom: 5.0, right: 10.0, left: 10.0 }; // Same as button's padding
                 props.width = Length::Shrink;
             }
             WidgetType::Space => {
                 props.show_widget_bounds = true;
+                props.height = Length::Shrink;
             }
             WidgetType::Image => {
                 props.width  = Length::Shrink;
@@ -2659,10 +3488,136 @@ impl Properties {
                 props.width  = Length::Shrink;
                 props.height = Length::Shrink;
             }
+
+            WidgetType::Markdown => {
+                props.height = Length::Shrink;
+            }
+            WidgetType::QRCode => {
+                props.width = Length::Shrink;
+                props.height = Length::Shrink;
+            }
+            WidgetType::ComboBox => {
+                props.combobox_state = combo_box::State::new(props.combobox_options.clone());
+            }
             _ => {} // Use defaults for other types
         }
         
         props
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CommonProperties {
+    // Track which categories of properties are common
+    pub has_width_height: bool,
+    pub has_padding: bool,
+    pub has_spacing: bool,
+    pub has_alignment: bool,
+    pub has_text_properties: bool,
+    pub has_border: bool,
+    pub has_background: bool,
+    
+    // Store the actual values (if all widgets have same value)
+    pub uniform_width: Option<Length>,
+    pub uniform_height: Option<Length>,
+    pub uniform_padding_mode: Option<PaddingMode>,
+    pub uniform_padding: Option<Padding>,
+    pub uniform_spacing: Option<f32>,
+    pub uniform_text_size: Option<f32>,
+
+    pub draft_fixed_width: String,
+    pub draft_fixed_height: String,
+    pub draft_fill_portion_width: String,
+    pub draft_fill_portion_height: String,
+}
+
+impl CommonProperties {
+    /// Check widgets to find common properties
+    pub fn from_widgets(widgets: &[&Widget]) -> Self {
+        if widgets.is_empty() {
+            return Self::default();
+        }
+        
+        // All widgets have width/height
+        let has_width_height = true;
+        
+        // Check if all widgets have padding (containers do, text doesn't)
+        let has_padding = widgets.iter().all(|w| {
+            matches!(
+                w.widget_type,
+                WidgetType::Container | WidgetType::Button | WidgetType::Row | 
+                WidgetType::Column | WidgetType::Scrollable
+            )
+        });
+        
+        // Check if all widgets have spacing (only Row/Column)
+        let has_spacing = widgets.iter().all(|w| {
+            matches!(w.widget_type, WidgetType::Row | WidgetType::Column)
+        });
+        
+        // Check if all widgets have text properties
+        let has_text_properties = widgets.iter().all(|w| {
+            matches!(
+                w.widget_type, 
+                WidgetType::Text | WidgetType::Button | WidgetType::TextInput
+            )
+        });
+        
+        // Check for uniform values
+        let uniform_width = Self::get_uniform_property(widgets, |w| w.properties.width);
+        let uniform_height = Self::get_uniform_property(widgets, |w| w.properties.height);
+        let uniform_padding_mode = Self::get_uniform_property(widgets, |w| w.properties.padding_mode);
+        let uniform_padding = Self::get_uniform_property(widgets, |w| w.properties.padding);
+        let uniform_spacing = if has_spacing {
+            Self::get_uniform_property(widgets, |w| w.properties.spacing)
+        } else {
+            None
+        };
+        let uniform_text_size = if has_text_properties {
+            Self::get_uniform_property(widgets, |w| w.properties.text_size)
+        } else {
+            None
+        };
+        
+        Self {
+            has_width_height,
+            has_padding,
+            has_spacing,
+            has_alignment: false, // todo
+            has_text_properties,
+            has_border: false,    // todo
+            has_background: false, // todo
+            uniform_width,
+            uniform_height,
+            uniform_padding_mode,
+            uniform_padding,
+            uniform_spacing,
+            uniform_text_size,
+            draft_fixed_width: String::new(),
+            draft_fixed_height: String::new(),
+            draft_fill_portion_width: String::new(),
+            draft_fill_portion_height: String::new(),
+        }
+    }
+    
+    /// Helper to check if all widgets have the same value for a property
+    /// WHY: Generic helper reduces code duplication
+    fn get_uniform_property<T, F>(widgets: &[&Widget], getter: F) -> Option<T>
+    where
+        T: PartialEq + Clone,
+        F: Fn(&Widget) -> T,
+    {
+        if widgets.is_empty() {
+            return None;
+        }
+        
+        let first_value = getter(widgets[0]);
+        
+        if widgets.iter().all(|w| getter(w) == first_value) {
+            Some(first_value)
+        } else {
+            None  // Values differ across widgets
+        }
     }
 }
 
@@ -2744,10 +3699,10 @@ impl std::fmt::Display for TextShaping {
     }
 }
 
-impl std::fmt::Display for RuleOrientation {
+impl std::fmt::Display for Orientation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { RuleOrientation::Horizontal => write!(f, "Horizontal"),
-                     RuleOrientation::Vertical   => write!(f, "Vertical"), }
+        match self { Orientation::Horizontal => write!(f, "Horizontal"),
+                     Orientation::Vertical   => write!(f, "Vertical"), }
     }
 }
 
@@ -2763,7 +3718,7 @@ impl std::fmt::Display for AlignText {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum AlignmentOption {
     Start,
     Center,
@@ -2808,7 +3763,7 @@ impl From<AlignmentOption> for Alignment {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum AlignmentYOption {
     Top,
     Center,
@@ -2853,7 +3808,7 @@ impl From<AlignmentYOption> for iced::alignment::Vertical {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum TextWrapping {
     None,
     Word,
@@ -2902,7 +3857,7 @@ impl From<TextWrapping> for text::Wrapping {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum TextShaping {
     Basic,
     Advanced,
@@ -2945,27 +3900,27 @@ impl From<TextShaping> for text::Shaping {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum ContainerAlignX { Left, Center, Right }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum ContainerAlignY { Top, Center, Bottom }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum RowColumnAlign { Start, Center, End }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum ButtonStyleType { Primary, Secondary, Success, Danger, Text }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum FontType { Default, Monospace }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuleOrientation { Horizontal, Vertical }
+#[derive(Debug, Clone, Copy, PartialEq, Eq,)]
+pub enum Orientation { Horizontal, Vertical }
 
 
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq,)]
 pub enum AlignText {
     Default,
     Left,
@@ -3020,7 +3975,7 @@ impl From<AlignText> for iced::advanced::text::Alignment {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq,)]
 pub enum DirChoice { Vertical, Horizontal, Both }
 impl std::fmt::Display for DirChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -3048,7 +4003,7 @@ impl DirChoice {
 }
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq,)]
 pub enum AnchorChoice { Start, End }
 impl std::fmt::Display for AnchorChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -3090,7 +4045,7 @@ impl From<AnchorChoice> for iced::widget::scrollable::Anchor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq,)]
 pub enum ContentFitChoice { Contain, Cover, Fill, ScaleDown, None }
 impl std::fmt::Display for ContentFitChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -3111,7 +4066,7 @@ impl From<ContentFitChoice> for ContentFit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq,)]
 pub enum TooltipPosition { Top, Bottom, Left, Right, FollowCursor }
 impl std::fmt::Display for TooltipPosition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

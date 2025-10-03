@@ -244,8 +244,6 @@ impl CustomThemes {
         //
         //
 
-        let palette = theme.palette();
-
         let content = column![
             container(text("Container Colors").size(20)).center_x(Length::Fill),
             row![
@@ -434,11 +432,12 @@ impl CustomThemes {
 
         let style_selection = column![
             container(text("Style Management").size(18)).center_x(Length::Fill),
-            
-            row![
-                button("Save Current Style").on_press(Message::SaveContainerStyle),
-                button("Reset to Theme").on_press(Message::ResetToTheme),
-            ].spacing(10),
+            container(
+                row![
+                    button("Save Current Style").on_press(Message::SaveContainerStyle),
+                    button("Reset to Theme").on_press(Message::ResetToTheme),
+                ].spacing(10),
+            ).center_x(Length::Fill),
             
             if !self.container_styles.is_empty() {
                 column![
@@ -452,10 +451,12 @@ impl CustomThemes {
                                             .size(12)
                                             .center()
                                     )
+                                    .center(Length::Fill)
                                     .width(Length::Fill)
                                     .height(Length::Fixed(30.0))
                                     .style(move |_: &Theme| *style)
                                 )
+                                .style(button::text)
                                 .width(Length::Fill)
                                 .on_press(Message::SelectContainerStyle(*id))
                                 .into()
@@ -514,7 +515,7 @@ impl CustomThemes {
                 self.container_snap
             )
         })
-        .width(Length::Fill)
+        .width(Length::Fixed(350.0))
         .height(Length::Fixed(120.0));
 
         let code_view = {
@@ -541,7 +542,7 @@ impl CustomThemes {
                 "Container Style Code",
                 "Container Style Code",
                 build_code_view_with_height_generic::<Message>(&tokens, 0.0, self.theme.clone())
-            ).width(150.0).overlay_width(750.0).overlay_height(500.0)
+            ).width(150.0).overlay_width(750.0).overlay_height(575.0)
 
 /*             column![
                 container(text("Container Style Code").size(18)).center_x(Length::Fill),
@@ -558,18 +559,18 @@ impl CustomThemes {
                     button("Palette Viewer").on_press(Message::OpenPaletteViewer)
                 ].width(Length::Fill),
 
-//                scrollable(
-//                    column![
-//                        style_selection,
+                scrollable(
+                    column![
+                        style_selection,
 
                         content,
 
                         container(text("Live Preview").size(18)).center_x(Length::Fill),
-                        preview_content,
+                        preview_content.center_x(Length::Fill),
 
                         
                         code_view,
-/*                     ]
+                    ]
                     .spacing(10)
                     .padding(
                         Padding {
@@ -579,7 +580,7 @@ impl CustomThemes {
                             bottom: 0.0,
                         }
                     )
-                ) */
+                )
             ]
             .spacing(10)
             .padding(
