@@ -1,13 +1,11 @@
 // controls.rs
-use iced::{ Alignment, Color, Element, Length, Padding, Theme };
+use iced::{ Alignment, Color, Element, Length, Padding, Theme, mouse::Interaction };
 use iced::widget::{ container, button, checkbox, column, pick_list, radio, row, rule, scrollable, slider, space, text, text_editor, text_input, Space};
-use crate::widget_helper::{
-    AlignmentOption, AlignmentYOption, TextWrapping, TextShaping, ContainerAlignX, ContainerAlignY, Message, PropertyChange, WidgetHierarchy, CommonProperties,
-    WidgetId, ButtonStyleType, length_to_string, parse_length, FontType, Orientation, AlignText, DirChoice, AnchorChoice, ContentFitChoice, TooltipPosition
-};
+use crate::widget_helper::*;
 use crate::widget_helper::code_generator::{CodeGenerator, build_code_view_with_height};
 use crate::widget_helper::type_system::TypeSystem;
 use crate::widget_helper::styles::container::*;
+use crate::icon;
 
 pub const TITLE_SIZE: f32 = 16.0;
 pub const SECTION_SIZE: f32 = 14.0;
@@ -31,57 +29,126 @@ pub fn container_controls<'a>(
         text("Container Properties").size(TITLE_SIZE),
 
         // Widget Name
+        widget_name(widget_id, &props.widget_name),
+
         column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(
+            text("Sizing Mode").size(SECTION_SIZE),
+            pick_list(
+                vec![
+                    ContainerSizingMode::Manual,
+                    ContainerSizingMode::CenterX,
+                    ContainerSizingMode::CenterY,
+                    ContainerSizingMode::Center,
+                ],
+                Some(props.container_sizing_mode),
+                move |mode| Message::PropertyChanged(
                     widget_id,
-                    PropertyChange::WidgetName(v)
-                )),
+                    PropertyChange::ContainerSizingMode(mode)
+                )
+            ),
+            text(match props.container_sizing_mode {
+                ContainerSizingMode::Manual => "Set width and height separately",
+                ContainerSizingMode::CenterX => "Set width and center content horizontally",
+                ContainerSizingMode::CenterY => "Set height and center content vertically",
+                ContainerSizingMode::Center => "Set size and center content in both directions",
+            })
+            .size(LABEL_SIZE - 1.0)
+            .color(Color::from_rgb(0.5, 0.5, 0.5)),
         ]
         .spacing(LABEL_SPACING),
 
-        // Alignment
-        row![
-            column![
-                text("Horizontal Align").size(LABEL_SIZE),
-                pick_list(
-                    vec![ContainerAlignX::Left, ContainerAlignX::Center, ContainerAlignX::Right],
-                    Some(props.align_x),
-                    move |v| Message::PropertyChanged(
+        // Size Controls - conditional based on mode
+        match props.container_sizing_mode {
+            ContainerSizingMode::Manual => {
+                // Regular width/height controls
+                size_controls_scrollable_aware(
+                    props.width,
+                    move |l| Message::PropertyChanged(widget_id, PropertyChange::Width(l)),
+                    props.height,
+                    move |l| Message::PropertyChanged(widget_id, PropertyChange::Height(l)),
+                    h,
+                    widget_id,
+                )
+            }
+            ContainerSizingMode::CenterX => {
+                column![
+                    length_picker_scrollable_aware(
+                        "Width (centers content horizontally)",
+                        props.container_center_length,
+                        move |l| Message::PropertyChanged(widget_id, PropertyChange::ContainerCenterLength(l)),
+                        h,
                         widget_id,
-                        PropertyChange::AlignX(v)
+                        false
                     ),
-                ),
-            ]
-            .spacing(LABEL_SPACING)
-            .width(Length::Fill),
-            
-            column![
-                text("Vertical Align").size(LABEL_SIZE),
-                pick_list(
-                    vec![ContainerAlignY::Top, ContainerAlignY::Center, ContainerAlignY::Bottom],
-                    Some(props.align_y),
-                    move |v| Message::PropertyChanged(
+                    text("Height will be determined by content")
+                        .size(LABEL_SIZE - 1.0)
+                        .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                ]
+                .spacing(LABEL_SPACING)
+                .into()
+            }
+            ContainerSizingMode::CenterY => {
+                column![
+                    length_picker_scrollable_aware(
+                        "Height (centers content vertically)",
+                        props.container_center_length,
+                        move |l| Message::PropertyChanged(widget_id, PropertyChange::ContainerCenterLength(l)),
+                        h,
                         widget_id,
-                        PropertyChange::AlignY(v)
+                        true
                     ),
-                ),
-            ]
-            .spacing(LABEL_SPACING)
-            .width(Length::Fill),
-        ]
-        .spacing(SECTION_SPACING),
+                    text("Width will be determined by content")
+                        .size(LABEL_SIZE - 1.0)
+                        .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                ]
+                .spacing(LABEL_SPACING)
+                .into()
+            }
+            ContainerSizingMode::Center => {
+                column![
+                    length_picker_scrollable_aware(
+                        "Size (centers content in both directions)",
+                        props.container_center_length,
+                        move |l| Message::PropertyChanged(widget_id, PropertyChange::ContainerCenterLength(l)),
+                        h,
+                        widget_id,
+                        false
+                    ),
+                ]
+                .spacing(LABEL_SPACING)
+                .into()
+            }
+        },
 
-        // Size Controls
-        size_controls_scrollable_aware(
-            props.width,
-            move |l| Message::PropertyChanged(widget_id, PropertyChange::Width(l)),
-            props.height,
-            move |l| Message::PropertyChanged(widget_id, PropertyChange::Height(l)),
-            h,
-            widget_id,
-        ),
+        // Only show alignment controls in Manual mode
+        if matches!(props.container_sizing_mode, ContainerSizingMode::Manual) {
+            row![
+                column![
+                    text("Horizontal Align").size(LABEL_SIZE),
+                    pick_list(
+                        vec![ContainerAlignX::Left, ContainerAlignX::Center, ContainerAlignX::Right],
+                        Some(props.align_x),
+                        move |v| Message::PropertyChanged(widget_id, PropertyChange::AlignX(v)),
+                    ),
+                ]
+                .spacing(LABEL_SPACING)
+                .width(Length::Fill),
+                
+                column![
+                    text("Vertical Align").size(LABEL_SIZE),
+                    pick_list(
+                        vec![ContainerAlignY::Top, ContainerAlignY::Center, ContainerAlignY::Bottom],
+                        Some(props.align_y),
+                        move |v| Message::PropertyChanged(widget_id, PropertyChange::AlignY(v)),
+                    ),
+                ]
+                .spacing(LABEL_SPACING)
+                .width(Length::Fill),
+            ]
+            .spacing(SECTION_SPACING)
+        } else {
+            row![]
+        },
 
         // Padding Controls
         padding_controls(
@@ -96,6 +163,19 @@ pub fn container_controls<'a>(
             props.border_radius,
             widget_id,
         ),
+
+        // Set a Widget Id
+        widget_id_control(widget_id, props.widget_id.clone()),
+
+        // Max Width control
+        max_width_control(widget_id, props.max_width),
+
+        // Max Height control
+        max_height_control(widget_id, props.max_height),
+        
+        //Clip control
+        clip_control(widget_id, props.clip),
+
     ]
     .spacing(MAIN_SPACING)
     .into();
@@ -110,10 +190,15 @@ pub fn row_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Them
     let content = column![
         text("Row Properties").size(TITLE_SIZE),
 
+        widget_name(widget_id, &props.widget_name),
+
         column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
+            text("Layout Mode").size(SECTION_SIZE),
+            checkbox(
+                "Enable wrapping (items wrap to next line when width exceeded)",
+                props.is_wrapping_row,
+            )
+            .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::IsWrappingRow(v))),
         ]
         .spacing(LABEL_SPACING),
 
@@ -132,15 +217,92 @@ pub fn row_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Them
         ]
         .spacing(LABEL_SPACING),
 
-        column![
-            text("Vertical Alignment").size(LABEL_SIZE),
-            pick_list(
-                vec![AlignmentOption::Start, AlignmentOption::Center, AlignmentOption::End],
-                Some(AlignmentOption::from_alignment(props.align_items)),
-                move |sel| Message::PropertyChanged(widget_id, PropertyChange::AlignItems(sel.to_alignment())),
-            ),
-        ]
-        .spacing(LABEL_SPACING),
+        // NEW: Wrapping-specific controls (only show when wrapping enabled)
+        if props.is_wrapping_row {
+            column![
+                column![
+                    text("Vertical Spacing (between lines)").size(SECTION_SIZE),
+                    row![
+                        checkbox(
+                            "Same as horizontal",
+                            props.wrapping_vertical_spacing.is_none(),
+                        )
+                        .on_toggle(move |use_same| {
+                            Message::PropertyChanged(
+                                widget_id,
+                                PropertyChange::WrappingVerticalSpacing(
+                                    if use_same { 0.0 } else { props.spacing }
+                                )
+                            )
+                        }),
+                        if let Some(v_spacing) = props.wrapping_vertical_spacing {
+                            row![
+                                slider(0.0..=50.0, v_spacing, move |v| {
+                                    Message::PropertyChanged(
+                                        widget_id,
+                                        PropertyChange::WrappingVerticalSpacing(v)
+                                    )
+                                })
+                                .step(1.0)
+                                .width(180),
+                                text(format!("{:.0}px", v_spacing)).size(LABEL_SIZE).width(50),
+                            ]
+                            .spacing(SECTION_SPACING)
+                            .align_y(Alignment::Center)
+                        } else {
+                            row![].into()
+                        }
+                    ]
+                    .spacing(SECTION_SPACING)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(LABEL_SPACING),
+                
+                column![
+                    text("Horizontal Alignment").size(LABEL_SIZE),
+                    pick_list(
+                        vec![
+                            ContainerAlignX::Left,
+                            ContainerAlignX::Center,
+                            ContainerAlignX::Right,
+                        ],
+                        Some(props.wrapping_align_x),
+                        move |align| Message::PropertyChanged(
+                            widget_id,
+                            PropertyChange::WrappingAlignX(align)
+                        ),
+                    ),
+                    text("Aligns wrapped lines within the row")
+                        .size(LABEL_SIZE - 1.0)
+                        .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                ]
+                .spacing(LABEL_SPACING),
+            ]
+            .spacing(SECTION_SPACING)
+        } else {
+            column![].into()
+        },
+
+        // Vertical alignment (only for non-wrapping rows)
+        if !props.is_wrapping_row {
+            column![
+                text("Vertical Alignment").size(LABEL_SIZE),
+                pick_list(
+                    vec![AlignmentXOption::Start, AlignmentXOption::Center, AlignmentXOption::End],
+                    Some(AlignmentXOption::from_alignment(props.align_items)),
+                    move |sel| Message::PropertyChanged(
+                        widget_id,
+                        PropertyChange::AlignItems(sel.to_alignment())
+                    ),
+                ),
+                text("Aligns children vertically within the row")
+                    .size(LABEL_SIZE - 1.0)
+                    .color(Color::from_rgb(0.5, 0.5, 0.5)),
+            ]
+            .spacing(LABEL_SPACING)
+        } else {
+            column![].into()
+        },
 
         size_controls_scrollable_aware(
             props.width,
@@ -156,6 +318,8 @@ pub fn row_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Them
             widget_id,
             props.padding_mode,
         ),
+
+        clip_control(widget_id, props.clip),
     ]
     .spacing(MAIN_SPACING)
     .into();
@@ -170,12 +334,7 @@ pub fn column_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: T
     let content = column![
         text("Column Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Spacing between items").size(LABEL_SIZE),
@@ -195,8 +354,8 @@ pub fn column_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: T
         column![
             text("Horizontal Alignment").size(LABEL_SIZE),
             pick_list(
-                vec![AlignmentOption::Start, AlignmentOption::Center, AlignmentOption::End],
-                Some(AlignmentOption::from_alignment(props.align_items)),
+                vec![AlignmentXOption::Start, AlignmentXOption::Center, AlignmentXOption::End],
+                Some(AlignmentXOption::from_alignment(props.align_items)),
                 move |sel| Message::PropertyChanged(widget_id, PropertyChange::AlignItems(sel.to_alignment())),
             ),
         ]
@@ -216,6 +375,12 @@ pub fn column_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: T
             widget_id,
             props.padding_mode,
         ),
+
+        // Max Width control
+        max_width_control(widget_id, props.max_width),
+        
+        //Clip control
+        clip_control(widget_id, props.clip),
     ]
     .spacing(MAIN_SPACING)
     .into();
@@ -226,16 +391,23 @@ pub fn column_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: T
 pub fn button_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Theme, type_system: Option<&'a TypeSystem>) -> Element<'a, Message> {
     let widget = h.get_widget_by_id(widget_id).expect("widget exists");
     let props = &widget.properties;
+    let palette = theme.extended_palette();
+
+    // Determine which handler is currently selected
+    let selected_handler = if props.button_on_press_enabled {
+        0
+    } else if props.button_on_press_with_enabled {
+        1
+    } else if props.button_on_press_maybe_enabled {
+        2
+    } else {
+        3 // None selected
+    };
 
     let content = column![
         text("Button Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Button Text").size(LABEL_SIZE),
@@ -262,6 +434,79 @@ pub fn button_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: T
         ]
         .spacing(LABEL_SPACING),
 
+        column![
+            text("Event Handler").size(SECTION_SIZE),
+            text("Choose which press handler pattern to use:")
+                .size(LABEL_SIZE)
+                .color(palette.background.strong.color),
+            
+            // None option
+            row![
+                radio(
+                    "None (button disabled)",
+                    3,
+                    Some(selected_handler),
+                    move |_| Message::PropertyChanged(
+                        widget_id,
+                        PropertyChange::ButtonPressHandler(OnHandler::None)
+                    )
+                ),
+                information(theme.clone(), "Button will not respond to clicks"),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+            
+
+            // on_press option
+            row![
+                radio(
+                    "on_press",
+                    0,
+                    Some(selected_handler),
+                    move |_| Message::PropertyChanged(
+                        widget_id,
+                        PropertyChange::ButtonPressHandler(OnHandler::OnAction)
+                    )
+                ),
+                information(theme.clone(), "Direct message dispatch - use when message is always the same"),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+            
+            // on_press_with option
+            row![
+                radio(
+                    "on_press_with",
+                    1,
+                    Some(selected_handler),
+                    move |_| Message::PropertyChanged(
+                        widget_id,
+                        PropertyChange::ButtonPressHandler(OnHandler::OnActionWith)
+                    )
+                ),
+                information(theme.clone(), "Closure returns message - use when message needs runtime data"),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+            
+            // on_press_maybe option
+            row![
+                radio(
+                    "on_press_maybe",
+                    2,
+                    Some(selected_handler),
+                    move |_| Message::PropertyChanged(
+                        widget_id,
+                        PropertyChange::ButtonPressHandler(OnHandler::OnActionMaybe)
+                    )
+                ),
+                information(theme.clone(), "Optional message - use when button should be conditionally enabled"),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(SECTION_SPACING),
+
         size_controls_scrollable_aware(
             props.width,
             move |l| Message::PropertyChanged(widget_id, PropertyChange::Width(l)),
@@ -276,12 +521,15 @@ pub fn button_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: T
             widget_id,
             props.padding_mode,
         ),
+
+        clip_control(widget_id, props.clip),
     ]
     .spacing(MAIN_SPACING)
     .into();
 
     scrollable(add_code_preview(content, h, widget_id, theme, type_system)).into()
 }
+
 
 pub fn text_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Theme, type_system: Option<&'a TypeSystem>) -> Element<'a, Message> {
     let widget = h.get_widget_by_id(widget_id).expect("widget exists");
@@ -290,12 +538,7 @@ pub fn text_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: The
     let content = column![
         text("Text Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Text Content").size(LABEL_SIZE),
@@ -417,18 +660,13 @@ pub fn text_input_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, them
     let content = column![
         text("Text Input Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Placeholder Text").size(LABEL_SIZE),
             text_input("Placeholder", &props.text_input_placeholder)
                 .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::TextInputPlaceholder(v)))
-                .width(300),
+                .width(250),
         ]
         .spacing(LABEL_SPACING),
 
@@ -462,8 +700,57 @@ pub fn text_input_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, them
         ]
         .spacing(LABEL_SPACING),
 
-        checkbox("Secure Input (Password)", props.is_secure)
-            .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::IsSecure(v))),
+        column![
+            text("Font").size(LABEL_SIZE),
+            pick_list(
+                vec![FontType::Default, FontType::Monospace],
+                Some(props.text_input_font),
+                move |v| Message::PropertyChanged(widget_id, PropertyChange::TextInputFont(v.into()))
+            ),
+        ]
+        .spacing(LABEL_SPACING),
+
+        column![
+            text("Horizontal Alignment").size(LABEL_SIZE),
+            pick_list(
+                vec![
+                    ContainerAlignX::Left,
+                    ContainerAlignX::Center,
+                    ContainerAlignX::Right,
+                ],
+                Some(props.text_input_alignment),
+                move |v| Message::PropertyChanged(widget_id, PropertyChange::TextInputAlignment(v))
+            ),
+        ]
+        .spacing(LABEL_SPACING),
+
+        column![
+            text("Security & Behavior").size(SECTION_SIZE),
+            
+            checkbox("Secure Input (Password)", props.is_secure)
+                .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::IsSecure(v))),
+        ]
+        .spacing(SECTION_SPACING),
+
+        column![
+            text("Event Handlers").size(SECTION_SIZE),
+            text("Enable additional event handlers:")
+                .size(LABEL_SIZE)
+                .color(Color::from_rgb(0.6, 0.6, 0.6)),
+            
+            checkbox("on_submit - Fires when Enter key is pressed", props.text_input_on_submit)
+                .on_toggle(move |v| Message::PropertyChanged(
+                    widget_id, 
+                    PropertyChange::TextInputOnSubmit(v)
+                )),
+            
+            checkbox("on_paste - Fires when text is pasted", props.text_input_on_paste)
+                .on_toggle(move |v| Message::PropertyChanged(
+                    widget_id, 
+                    PropertyChange::TextInputOnPaste(v)
+                )),
+        ]
+        .spacing(SECTION_SPACING),
 
         size_controls_scrollable_aware(
             props.width,
@@ -487,12 +774,7 @@ pub fn checkbox_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme:
     let content = column![
         text("Checkbox Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Label Text").size(LABEL_SIZE),
@@ -557,12 +839,7 @@ pub fn toggler_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: 
     let content = column![
         text("Toggler Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Label Text").size(LABEL_SIZE),
@@ -627,12 +904,7 @@ pub fn radio_controls<'a>(hierarchy: &'a WidgetHierarchy, widget_id: WidgetId, t
     let content = column![
         text("Radio Button Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Label Text").size(LABEL_SIZE),
@@ -762,12 +1034,7 @@ pub fn picklist_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme:
     let content = column![
         text("Pick List Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Placeholder Text").size(LABEL_SIZE),
@@ -866,12 +1133,7 @@ pub fn slider_controls<'a>(hierarchy: &'a WidgetHierarchy, widget_id: WidgetId, 
     let content = column![
         text("Slider Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         row![
             column![
@@ -955,12 +1217,7 @@ pub fn vertical_slider_controls<'a>(hierarchy: &'a WidgetHierarchy, widget_id: W
     let content = column![
         text("Vertical Slider Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         row![
             column![
@@ -1089,12 +1346,7 @@ pub fn scrollable_controls<'a>(hierarchy: &'a WidgetHierarchy, widget_id: Widget
     let content = column![
         text("Scrollable Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         size_controls_scrollable_aware(
             props.width,
@@ -1153,12 +1405,7 @@ pub fn space_controls<'a>(hierarchy: &'a WidgetHierarchy, widget_id: WidgetId, t
     let content = column![
         text("Space Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Orientation").size(LABEL_SIZE),
@@ -1195,12 +1442,7 @@ pub fn progress_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme:
     let content = column![
         text("Progress Bar Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &p.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v)))
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &p.widget_name),
 
         row![
             text("Orientation").size(LABEL_SIZE).width(Length::Fixed(80.0)),
@@ -1309,6 +1551,8 @@ pub fn image_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Th
 
     let content = column![
         text("Image Properties").size(TITLE_SIZE),
+
+        widget_name(widget_id, &props.widget_name),
         
         row![
             text("Path").size(LABEL_SIZE).width(Length::Fixed(80.0)),
@@ -1355,6 +1599,8 @@ pub fn svg_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Them
 
     let content = column![
         text("SVG Properties").size(TITLE_SIZE),
+
+        widget_name(widget_id, &props.widget_name),
         
         row![
             text("Path").size(LABEL_SIZE).width(Length::Fixed(80.0)),
@@ -1401,6 +1647,8 @@ pub fn tooltip_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: 
 
     let content = column![
         text("Tooltip Properties").size(TITLE_SIZE),
+
+        widget_name(widget_id, &p.widget_name),
         
         row![
             text("Text").size(LABEL_SIZE).width(Length::Fixed(80.0)),
@@ -1461,12 +1709,7 @@ pub fn combobox_controls<'a>(
     let content = column![
         text("ComboBox Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Placeholder Text").size(LABEL_SIZE),
@@ -1689,12 +1932,7 @@ pub fn markdown_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme:
     let content = column![
         text("Markdown Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Markdown Content").size(LABEL_SIZE),
@@ -1743,12 +1981,7 @@ pub fn qrcode_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: T
     let content = column![
         text("QR Code Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Data to Encode").size(LABEL_SIZE),
@@ -1795,12 +2028,7 @@ pub fn stack_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Th
     let content = column![
         text("Stack Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         text("Stack overlays its children on top of each other.")
             .size(LABEL_SIZE)
@@ -1832,20 +2060,69 @@ pub fn mousearea_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme
     let content = column![
         text("Mouse Area Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         text("Mouse Area captures mouse events over its child widget.")
             .size(LABEL_SIZE)
             .color(Color::from_rgb(0.6, 0.6, 0.6)),
 
-        text("Add a single child widget to capture events for.")
-            .size(LABEL_SIZE)
-            .color(Color::from_rgb(0.6, 0.6, 0.6)),
+        // Event Handlers Section
+        column![
+            text("Event Handlers").size(SECTION_SIZE),
+            
+            // Left button events
+            column![
+                text("Left Mouse Button:").size(LABEL_SIZE),
+                checkbox("on_press", props.mousearea_on_press)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnPress(v))),
+                checkbox("on_release", props.mousearea_on_release)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnRelease(v))),
+                checkbox("on_double_click", props.mousearea_on_double_click)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnDoubleClick(v))),
+            ].spacing(LABEL_SPACING),
+            
+            // Right button events
+            column![
+                text("Right Mouse Button:").size(LABEL_SIZE),
+                checkbox("on_right_press", props.mousearea_on_right_press)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnRightPress(v))),
+                checkbox("on_right_release", props.mousearea_on_right_release)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnRightRelease(v))),
+            ].spacing(LABEL_SPACING),
+            
+            // Middle button events
+            column![
+                text("Middle Mouse Button:").size(LABEL_SIZE),
+                checkbox("on_middle_press", props.mousearea_on_middle_press)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnMiddlePress(v))),
+                checkbox("on_middle_release", props.mousearea_on_middle_release)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnMiddleRelease(v))),
+            ].spacing(LABEL_SPACING),
+            
+            // Other events
+            column![
+                text("Other Events:").size(LABEL_SIZE),
+                checkbox("on_scroll (with ScrollDelta)", props.mousearea_on_scroll)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnScroll(v))),
+                checkbox("on_enter", props.mousearea_on_enter)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnEnter(v))),
+                checkbox("on_move (with Point)", props.mousearea_on_move)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnMove(v))),
+                checkbox("on_exit", props.mousearea_on_exit)
+                    .on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaOnExit(v))),
+            ].spacing(LABEL_SPACING),
+            
+            // Mouse interaction picker
+            column![
+                text("Mouse Cursor:").size(LABEL_SIZE),
+                pick_list(
+                    MouseInteraction::ALL,
+                    props.mousearea_interaction,
+                    move |v| Message::PropertyChanged(widget_id, PropertyChange::MouseAreaInteraction(Some(v)))
+                )
+                .placeholder("Default cursor"),
+            ].spacing(LABEL_SPACING),
+        ].spacing(SECTION_SPACING),
 
         size_controls_scrollable_aware(
             props.width,
@@ -1869,12 +2146,7 @@ pub fn themer_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: T
     let content = column![
         text("Themer Properties").size(TITLE_SIZE),
 
-        column![
-            text("Widget Name").size(LABEL_SIZE),
-            text_input("Name", &props.widget_name)
-                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v))),
-        ]
-        .spacing(LABEL_SPACING),
+        widget_name(widget_id, &props.widget_name),
 
         column![
             text("Theme").size(LABEL_SIZE),
@@ -1912,6 +2184,8 @@ pub fn pin_controls<'a>(h: &'a WidgetHierarchy, widget_id: WidgetId, theme: Them
 
     let content = column![
         text("Pin Properties").size(TITLE_SIZE),
+
+        widget_name(widget_id, &props.widget_name),
         
         row![
             text("Position").size(LABEL_SIZE).width(Length::Fixed(80.0)),
@@ -2519,6 +2793,18 @@ pub fn padding_controls<'a>(
     .into()
 }
 
+pub fn information<'a>(theme: Theme, info: &'a str) -> Element<'a, Message> {
+    let palette = theme.extended_palette();
+    tooltip(
+        icon::info().center().size(14).color(palette.background.stronger.color),
+        container(
+            text(info)
+                .size(12)
+        ).style(container::rounded_box).padding([5, 10]),
+        tooltip::Position::Top
+    ).into()
+}
+
 pub fn border_controls<'a>(
     border_width: f32,
     border_radius: f32,
@@ -2557,6 +2843,125 @@ pub fn border_controls<'a>(
     ]
     .spacing(SECTION_SPACING)
     .into()
+}
+
+pub fn clip_control<'a>(widget_id: WidgetId, clipped: bool) -> Element<'a, Message>{
+        column![
+            text("Clipping").size(SECTION_SIZE),
+            checkbox(
+                "Clip content on overflow",
+                clipped,
+            ).on_toggle(move |v| Message::PropertyChanged(widget_id, PropertyChange::Clip(v))),
+            text("When enabled, child content that exceeds bounds will be clipped")
+                .size(LABEL_SIZE - 1.0)
+                .color(Color::from_rgb(0.5, 0.5, 0.5)),
+        ]
+        .spacing(LABEL_SPACING)
+        .into()
+}
+
+pub fn max_width_control<'a>(widget_id: WidgetId, max_width: Option<f32>) -> Element<'a, Message> {
+        column![
+            text("Maximum Width").size(SECTION_SIZE),
+            row![
+                checkbox(
+                    "Set max width",
+                    max_width.is_some(),
+                ).on_toggle(move |enabled| Message::PropertyChanged(widget_id, PropertyChange::MaxWidth(if enabled { Some(800.0) } else { None }))),
+                if let Some(max_w) = max_width {
+                    row![
+                        slider(100.0..=2000.0, max_w, move |v| {
+                            Message::PropertyChanged(widget_id, PropertyChange::MaxWidth(Some(v)))
+                        })
+                        .step(10.0)
+                        .width(200),
+                        text(format!("{:.0}px", max_w)).size(LABEL_SIZE).width(60),
+                    ]
+                    .spacing(SECTION_SPACING)
+                    .align_y(Alignment::Center)
+                } else {
+                    row![]
+                }
+            ]
+            .spacing(SECTION_SPACING)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(LABEL_SPACING)
+        .into()   
+}
+
+pub fn max_height_control<'a>(widget_id: WidgetId, max_height: Option<f32>) -> Element<'a, Message> {
+        column![
+            text("Maximum Height").size(SECTION_SIZE),
+            row![
+                checkbox(
+                    "Set max height",
+                    max_height.is_some(),
+                ).on_toggle(move |enabled| Message::PropertyChanged(widget_id, PropertyChange::MaxHeight(if enabled { Some(800.0) } else { None }))),
+                if let Some(max_h) = max_height {
+                    row![
+                        slider(100.0..=2000.0, max_h, move |v| {
+                            Message::PropertyChanged(widget_id, PropertyChange::MaxHeight(Some(v)))
+                        })
+                        .step(10.0)
+                        .width(200),
+                        text(format!("{:.0}px", max_h)).size(LABEL_SIZE).width(60),
+                    ]
+                    .spacing(SECTION_SPACING)
+                    .align_y(Alignment::Center)
+                } else {
+                    row![].into()
+                }
+            ]
+            .spacing(SECTION_SPACING)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(LABEL_SPACING)
+        .into()
+}
+
+pub fn widget_id_control<'a>(widget_id: WidgetId, id: Option<String> ) -> Element<'a, Message> {
+    let id_clone = id.clone();
+
+    column![
+        text("Widget ID (optional)").size(SECTION_SIZE),
+        row![
+            checkbox(
+                "Set custom ID",
+                id_clone.is_some(),
+            ).on_toggle(move |enabled| Message::PropertyChanged(widget_id, PropertyChange::WidgetId(if enabled { Some(String::new()) } else { None }))),
+            if let Some(ref id_val) = id {
+                row![
+                    text_input("widget_id", *&id_val)
+                        .on_input(move |v| {
+                            Message::PropertyChanged(widget_id, PropertyChange::WidgetId(Some(v)))
+                        })
+                        .width(200)
+                ]
+
+            } else {
+                row![]
+            }
+        ]
+        .spacing(SECTION_SPACING)
+        .align_y(Alignment::Center),
+        text("Use for programmatic access via widget::Id")
+            .size(LABEL_SIZE - 1.0)
+            .color(Color::from_rgb(0.5, 0.5, 0.5)),
+    ]
+    .spacing(LABEL_SPACING)
+    .into()    
+}
+
+pub fn widget_name<'a>(widget_id: WidgetId, name: &'a str) -> Element<'a, Message> {
+        column![
+            text("Widget Name").size(LABEL_SIZE),
+            text_input("Name", name)
+                .on_input(move |v| Message::PropertyChanged(widget_id, PropertyChange::WidgetName(v)))
+                .width(250),
+        ]
+        .spacing(LABEL_SPACING)
+        .into()
 }
 
 pub fn add_code_preview<'a>(content: Element<'a, Message>, hierarchy: &'a WidgetHierarchy, widget_id: WidgetId, theme: Theme, type_system: Option<&'a TypeSystem>) -> Element<'a, Message> {
@@ -2861,7 +3266,7 @@ fn batch_length_picker<'a>(
                 }
             }
         )
-        .width(150)
+        .width(250)
     ]
     .spacing(LABEL_SPACING);
     
@@ -2880,7 +3285,7 @@ fn batch_length_picker<'a>(
                             Message::BatchPropertyChanged(PropertyChange::DraftFixedWidth(text))
                         }
                     })
-                    .width(120)
+                    .width(250)
             ]
             .spacing(LABEL_SPACING)
             .into()
@@ -2898,7 +3303,7 @@ fn batch_length_picker<'a>(
                             Message::BatchPropertyChanged(PropertyChange::DraftFillPortionWidth(text))
                         }
                     })
-                    .width(120)
+                    .width(250)
             ]
             .spacing(LABEL_SPACING)
             .into()

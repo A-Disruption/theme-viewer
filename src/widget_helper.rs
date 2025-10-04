@@ -1,7 +1,7 @@
 use iced::{
     alignment::{Horizontal, Vertical}, widget::{
         button, checkbox, column, container, space, pick_list, progress_bar, radio, row, scrollable, slider, text, text_input, toggler, rule, vertical_slider, Space, tooltip, svg, image, pin, stack, mouse_area, combo_box, qr_code, markdown, text_editor,
-    }, Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow, Theme, Vector, ContentFit, Point
+    }, Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow, Theme, Vector, ContentFit, Point, mouse::Interaction,
 };
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -31,6 +31,10 @@ pub enum PropertyChange {
     WidgetName(String),
     Width(Length),
     Height(Length),
+    MaxWidth(Option<f32>),
+    MaxHeight(Option<f32>),
+    Clip(bool),
+    WidgetId(Option<String>),
 
     // Draft Properties
     DraftFixedWidth(String),
@@ -60,6 +64,13 @@ pub enum PropertyChange {
     ShadowOffsetY(f32),
     ShadowBlur(f32),
     ShadowColor(Color),
+    ContainerSizingMode(ContainerSizingMode),
+    ContainerCenterLength(Length),
+
+    // Wrapping Row
+    IsWrappingRow(bool),
+    WrappingVerticalSpacing(f32),
+    WrappingAlignX(ContainerAlignX),
     
     // Layout properties
     Spacing(f32),
@@ -78,6 +89,7 @@ pub enum PropertyChange {
     
     // Button properties
     ButtonStyle(ButtonStyleType),
+    ButtonPressHandler(OnHandler),
 
     // TextInput properties
     TextInputValue(String),
@@ -85,6 +97,11 @@ pub enum PropertyChange {
     TextInputSize(f32),
     TextInputPadding(f32),
     IsSecure(bool),
+    TextInputOnSubmit(bool),
+    TextInputOnPaste(bool),
+    TextInputFont(FontType),
+    TextInputLineHeight(text::LineHeight),
+    TextInputAlignment(ContainerAlignX),
     
     // Checkbox properties
     CheckboxChecked(bool),
@@ -169,6 +186,20 @@ pub enum PropertyChange {
     // Themer
     ThemerTheme(Option<Theme>),
 
+    // Mouse events
+    MouseAreaOnPress(bool),
+    MouseAreaOnRelease(bool),
+    MouseAreaOnDoubleClick(bool),
+    MouseAreaOnRightPress(bool),
+    MouseAreaOnRightRelease(bool),
+    MouseAreaOnMiddlePress(bool),
+    MouseAreaOnMiddleRelease(bool),
+    MouseAreaOnScroll(bool),
+    MouseAreaOnEnter(bool),
+    MouseAreaOnMove(bool),
+    MouseAreaOnExit(bool),
+    MouseAreaInteraction(Option<MouseInteraction>),
+
     //Do Nothing
     Noop
 }
@@ -188,6 +219,14 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
             properties.draft_fill_portion_height.clear();
         }
         PropertyChange::AlignItems(value) => properties.align_items = value,
+
+        PropertyChange::MaxWidth(v) => properties.max_width = v,
+        PropertyChange::MaxHeight(v) => properties.max_height = v,
+        PropertyChange::Clip(v) => properties.clip = v,
+        PropertyChange::WidgetId(v) => properties.widget_id = v,
+        PropertyChange::IsWrappingRow(v) => properties.is_wrapping_row = v,
+        PropertyChange::WrappingVerticalSpacing(v) => properties.wrapping_vertical_spacing = Some(v),
+        PropertyChange::WrappingAlignX(v) => properties.wrapping_align_x = v,
 
         PropertyChange::DraftFixedWidth(text) => {
             properties.draft_fixed_width = text.clone();
@@ -318,6 +357,22 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::BorderWidth(value)  => properties.border_width = value,
         PropertyChange::BorderRadius(value) => properties.border_radius = value,
         PropertyChange::BorderColor(value)  => properties.border_color = value,
+        PropertyChange::ContainerSizingMode(v) => {
+            properties.container_sizing_mode = v;
+            // When switching to center modes, copy current width/height as starting point
+            match v {
+                ContainerSizingMode::CenterX | ContainerSizingMode::Center => {
+                    properties.container_center_length = properties.width;
+                }
+                ContainerSizingMode::CenterY => {
+                    properties.container_center_length = properties.height;
+                }
+                _ => {}
+            }
+        }
+        PropertyChange::ContainerCenterLength(v) => properties.container_center_length = v,
+        PropertyChange::AlignX(v) => properties.align_x = v,
+        PropertyChange::AlignY(v) => properties.align_y = v,
 
         PropertyChange::BackgroundColor(value) => properties.background_color = value,
 
@@ -332,6 +387,20 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::TextAlignY(alignment)       => properties.text_align_y = alignment.to_alignment(),
 
         PropertyChange::ButtonStyle(value) => properties.button_style = value,
+        PropertyChange::ButtonPressHandler(handler) => {
+            // Reset all to false first
+            properties.button_on_press_enabled = false;
+            properties.button_on_press_with_enabled = false;
+            properties.button_on_press_maybe_enabled = false;
+            
+            // Set the selected one
+            match handler {
+                OnHandler::None => {}, // All stay false
+                OnHandler::OnAction => properties.button_on_press_enabled = true,
+                OnHandler::OnActionWith => properties.button_on_press_with_enabled = true,
+                OnHandler::OnActionMaybe => properties.button_on_press_maybe_enabled = true,
+            }
+        },
         
         // TextInput properties
         PropertyChange::TextInputValue(value)       => properties.text_input_value = value,
@@ -339,6 +408,11 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::TextInputSize(value)        => properties.text_input_size = value,
         PropertyChange::TextInputPadding(value)     => properties.text_input_padding = value,
         PropertyChange::IsSecure(value)             => properties.is_secure = value,
+        PropertyChange::TextInputOnSubmit(b) => properties.text_input_on_submit = b,
+        PropertyChange::TextInputOnPaste(b) => properties.text_input_on_paste = b,
+        PropertyChange::TextInputFont(font) => properties.text_input_font = font,
+        PropertyChange::TextInputLineHeight(line_height) => properties.text_input_line_height = line_height,
+        PropertyChange::TextInputAlignment(align_x) => properties.text_input_alignment = align_x,
         
         // Checkbox properties
         PropertyChange::CheckboxChecked(value)  => properties.checkbox_checked = value,
@@ -476,6 +550,19 @@ pub fn apply_property_change(properties: &mut Properties, change: PropertyChange
         PropertyChange::ThemerTheme(v) => properties.themer_theme = v,
 
         PropertyChange::Noop => {},
+
+        PropertyChange::MouseAreaOnPress(b) => properties.mousearea_on_press = b,
+        PropertyChange::MouseAreaOnRelease(b) => properties.mousearea_on_release = b,
+        PropertyChange::MouseAreaOnDoubleClick(b) => properties.mousearea_on_double_click = b,
+        PropertyChange::MouseAreaOnRightPress(b) => properties.mousearea_on_right_press = b,
+        PropertyChange::MouseAreaOnRightRelease(b) => properties.mousearea_on_right_release = b,
+        PropertyChange::MouseAreaOnMiddlePress(b) => properties.mousearea_on_middle_press = b,
+        PropertyChange::MouseAreaOnMiddleRelease(b) => properties.mousearea_on_middle_release = b,
+        PropertyChange::MouseAreaOnScroll(b) => properties.mousearea_on_scroll = b,
+        PropertyChange::MouseAreaOnEnter(b) => properties.mousearea_on_enter = b,
+        PropertyChange::MouseAreaOnMove(b) => properties.mousearea_on_move = b,
+        PropertyChange::MouseAreaOnExit(b) => properties.mousearea_on_exit = b,
+        PropertyChange::MouseAreaInteraction(interaction) => properties.mousearea_interaction = interaction,
         
         _ => {} // Placeholder for properties not implemented
     }
@@ -566,26 +653,27 @@ impl WidgetHierarchy {
         self.get_widget_by_id(id).is_some()
     }
 
-pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> bool {
-    if let Some(parent) = self.get_widget_by_id(parent_id) {
-        if !can_have_children(&parent.widget_type) { return false; }
+    pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> bool {
+        if let Some(parent) = self.get_widget_by_id(parent_id) {
+            if !can_have_children(&parent.widget_type) { return false; }
 
-        if parent_id == self.root.id {
-            return parent.children.is_empty()
-                && matches!(widget_type, WidgetType::Column | WidgetType::Row);
-        }
-
-        match parent.widget_type {
-            WidgetType::Scrollable => {
-                if !parent.children.is_empty() { return false; }
-                matches!(widget_type, WidgetType::Column | WidgetType::Row | WidgetType::Container)
+            if parent_id == self.root.id {
+                return parent.children.is_empty()
+                    && matches!(widget_type, WidgetType::Column | WidgetType::Row);
             }
-            WidgetType::Container => parent.children.is_empty(),
-            WidgetType::Tooltip   => parent.children.len() < 2, // <= 2 children
-            _ => true,
-        }
-    } else { false }
-}
+
+            match parent.widget_type {
+                WidgetType::Scrollable => {
+                    if !parent.children.is_empty() { return false; }
+                    matches!(widget_type, WidgetType::Column | WidgetType::Row | WidgetType::Container)
+                }
+                WidgetType::Container => parent.children.is_empty(),
+                WidgetType::Tooltip   => parent.children.len() < 2, // <= 2 children
+                WidgetType::MouseArea => parent.children.is_empty(),
+                _ => true,
+            }
+        } else { false }
+    }
     
     pub fn add_child(&mut self, parent_id: WidgetId, widget_type: WidgetType) -> Result<WidgetId, String> {
         if !self.can_add_child(parent_id, widget_type) {
@@ -772,7 +860,14 @@ pub fn can_add_child(&self, parent_id: WidgetId, widget_type: WidgetType) -> boo
         if matches!(new_parent_ty, WidgetType::Tooltip) {
             let count = self.get_widget_by_id(new_parent_id).unwrap().children.len();
             if count >= 2 && self.find_parent_id(id) != Some(new_parent_id) {
-                return Err("Tooltip can only contain a single child".into());
+                return Err("Tooltip can only contain two children".into());
+            }
+        }
+
+        if matches!(new_parent_ty, WidgetType::MouseArea) {
+            let count = self.get_widget_by_id(new_parent_id).unwrap().children.len();
+            if count >= 1 && self.find_parent_id(id) != Some(new_parent_id) {
+                return Err("MouseArea can only contain one child".into());
             }
         }
 
@@ -1373,12 +1468,19 @@ impl WidgetVisualizer {
             }
 
             // Interactive widget messages
-            Message::ButtonPressed(_id) => {
-                // For preview, we don't need to do anything special
+            Message::ButtonPressed(id) => {
+                println!("{:?}, button pressed", id);
             }
             
             Message::TextInputChanged(id, value) => {
                 self.hierarchy.apply_property_change(id, PropertyChange::TextInputValue(value), &self.type_system);
+            }
+
+            Message::Submitted(id) => { println!("{:?}, text_input submitted.", id); }
+
+            Message::TextPasted(id, value) => {
+                println!("{:?}, text pasted.", id);
+                self.hierarchy.apply_property_change(id, PropertyChange::TextInputValue(value), &self.type_system)
             }
             
             Message::CheckboxToggled(id, checked) => {
@@ -1838,7 +1940,7 @@ impl WidgetVisualizer {
         }
 
         let branch = match widget.widget_type {
-            WidgetType::Row | WidgetType::Column | WidgetType::Container | WidgetType::Scrollable | WidgetType::Tooltip => {
+            WidgetType::Row | WidgetType::Column | WidgetType::Container | WidgetType::Scrollable | WidgetType::Tooltip | WidgetType::MouseArea => {
 
                 let content = row![
                         container(text(format!("{}", widget.name))).padding(5),
@@ -1957,7 +2059,7 @@ impl WidgetVisualizer {
                 vec![]
             }
         } else if parent.widget_type == WidgetType::MouseArea {
-            if parent.children.is_empty() {
+            if parent.children.len() < 1 {
                 vec![
                     WidgetType::Container,
                     WidgetType::Scrollable,
@@ -2123,30 +2225,55 @@ impl WidgetVisualizer {
 
         let content = match widget.widget_type {
             WidgetType::Container => {
-                let mut content = column![];
-                
-                if widget.children.is_empty() {
-                    content = content.push(text("Container Content"));
-                } else {
-                    for child in &widget.children {
-                        content = content.push(self.build_widget_preview(child));
+                let mut container = container(
+                    if widget.children.is_empty() {
+                        text("Empty Container").into()
+                    } else {
+                        self.build_widget_preview(&widget.children[0])
                     }
+                );
+                
+                // Apply all container properties
+                container = match props.container_sizing_mode {
+                    ContainerSizingMode::Manual => {
+                        container
+                            .width(props.width)
+                            .height(props.height)
+                            .align_x(props.align_x)
+                            .align_y(props.align_y)
+                    }
+                    ContainerSizingMode::CenterX => {
+                        container.center_x(props.container_center_length)
+                    }
+                    ContainerSizingMode::CenterY => {
+                        container.center_y(props.container_center_length)
+                    }
+                    ContainerSizingMode::Center => {
+                        container.center(props.container_center_length)
+                    }
+                };
+                
+                // NEW: Apply max_width
+                if let Some(max_w) = props.max_width {
+                    container = container.max_width(max_w);
                 }
                 
-                let mut container = container(content)
-                    .width(props.width)
-                    .height(props.height)
-                    .padding(props.padding)
-                    .align_x(match props.align_x {
-                        ContainerAlignX::Left => Horizontal::Left,
-                        ContainerAlignX::Center => Horizontal::Center,
-                        ContainerAlignX::Right => Horizontal::Right,
-                    })
-                    .align_y(match props.align_y {
-                        ContainerAlignY::Top => Vertical::Top,
-                        ContainerAlignY::Center => Vertical::Center,
-                        ContainerAlignY::Bottom => Vertical::Bottom,
-                    });
+                // NEW: Apply max_height
+                if let Some(max_h) = props.max_height {
+                    container = container.max_height(max_h);
+                }
+                
+                // NEW: Apply clip
+                if props.clip {
+                    container = container.clip(true);
+                }
+                
+                // NEW: Apply widget ID
+                if let Some(ref id) = props.widget_id {
+                    if !id.is_empty() {
+                        container = container.id(id.clone());
+                    }
+                }
 
                 // If user sets a style, use that style, otherwise use style from themer
                 container = container.style({
@@ -2188,32 +2315,70 @@ impl WidgetVisualizer {
             }
             
             WidgetType::Row => {
-                let mut content = row![]
-                    .spacing(props.spacing)
-                    .width(props.width)
-                    .height(props.height)
-                    .padding(props.padding)
-                    .align_y(props.align_items);
+                let children: Vec<Element<'a, Message>> = widget.children
+                    .iter()
+                    .map(|child| self.build_widget_preview(child))
+                    .collect();
                 
-                if widget.children.is_empty() {
-                    content = content.push(text("Row Item 1"));
-                    content = content.push(text("Row Item 2"));
-                } else {
-                    for child in &widget.children {
-                        content = content.push(self.build_widget_preview(child));
+                if props.is_wrapping_row {
+                    // Wrapping rows MUST use row(children) pattern
+                    let mut wrapping = row(children)
+                        .spacing(props.spacing)
+                        .padding(props.padding)
+                        .width(props.width)
+                        .height(props.height)
+                        .wrap();
+                    
+                    // Apply vertical spacing if set
+                    if let Some(v_spacing) = props.wrapping_vertical_spacing {
+                        wrapping = wrapping.vertical_spacing(v_spacing);
                     }
+                    
+                    // Apply horizontal alignment
+                    wrapping = wrapping.align_x(props.wrapping_align_x);
+                    
+                    wrapping.into()
+                } else {
+                    // Non-wrapping rows: Use the old working pattern
+                    let mut content = row![]
+                        .spacing(props.spacing)
+                        .padding(props.padding)
+                        .width(props.width)
+                        .height(props.height)
+                        .align_y(match props.align_items {
+                            Alignment::Start => Vertical::Top,
+                            Alignment::Center => Vertical::Center,
+                            Alignment::End => Vertical::Bottom,
+                        });
+                    
+                    if widget.children.is_empty() {
+                        content = content.push(text("Row Item 1"));
+                        content = content.push(text("Row Item 2"));
+                    } else {
+                        for child in &widget.children {
+                            content = content.push(self.build_widget_preview(child));
+                        }
+                    }
+                    
+                    if props.clip {
+                        content = content.clip(true);
+                    }
+                    
+                    content.into()
                 }
-
-                content.into()
             }
             
             WidgetType::Column => {
                 let mut content = column![]
                     .spacing(props.spacing)
+                    .padding(props.padding)
                     .width(props.width)
                     .height(props.height)
-                    .padding(props.padding)
-                    .align_x(props.align_items);
+                    .align_x(match props.align_items {
+                        Alignment::Start => Horizontal::Left,
+                        Alignment::Center => Horizontal::Center,
+                        Alignment::End => Horizontal::Right,
+                    });
                 
                 if widget.children.is_empty() {
                     content = content.push(text("Column Item 1"));
@@ -2223,24 +2388,62 @@ impl WidgetVisualizer {
                         content = content.push(self.build_widget_preview(child));
                     }
                 }
-
+                
+                if let Some(max_w) = props.max_width {
+                    content = content.max_width(max_w);
+                }
+                
+                if props.clip {
+                    content = content.clip(true);
+                }
+                
                 content.into()
             }
             
             WidgetType::Button => {
-                button(text(&props.text_content))
-                    .on_press(Message::ButtonPressed(widget.id))
-                    .width(props.width)
-                    .height(props.height)
-                    .padding(props.padding)
-                    .style(match props.button_style {
-                        ButtonStyleType::Primary => button::primary,
-                        ButtonStyleType::Secondary => button::secondary,
-                        ButtonStyleType::Success => button::success,
-                        ButtonStyleType::Danger => button::danger,
-                        ButtonStyleType::Text => button::text,
-                    })
-                    .into()
+                let props = &widget.properties;
+                
+                // Create button with text content
+                let mut btn = button(text(&props.text_content));
+                
+                if props.button_on_press_enabled {
+                    btn = btn.on_press(Message::Noop);
+                }
+
+                if props.button_on_press_with_enabled{
+                    btn = btn.on_press_with(|| Message::Noop);
+                }
+
+                if props.button_on_press_maybe_enabled{
+                    btn = btn.on_press_maybe(Some(Message::Noop));
+                }
+                
+                // Apply button style
+                btn = match props.button_style {
+                    ButtonStyleType::Primary => btn.style(button::primary),
+                    ButtonStyleType::Secondary => btn.style(button::secondary),
+                    ButtonStyleType::Success => btn.style(button::success),
+                    ButtonStyleType::Danger => btn.style(button::danger),
+                    ButtonStyleType::Text => btn.style(button::text),
+                };
+                
+                // Apply layout properties
+                btn = btn.width(props.width);
+                btn = btn.height(props.height);
+                
+                // Apply padding
+                if props.padding_mode == PaddingMode::Uniform {
+                    btn = btn.padding(props.padding.top);
+                } else {
+                    btn = btn.padding(props.padding);
+                }
+                
+                // Apply clip
+                if props.clip {
+                    btn = btn.clip(true);
+                }
+                
+                btn.into()
             }
             
             WidgetType::Text => {
@@ -2274,13 +2477,57 @@ impl WidgetVisualizer {
             }
 
             WidgetType::TextInput => {
-                text_input(&props.text_input_placeholder, &props.text_input_value)
-                    .on_input(|value| Message::TextInputChanged(widget.id, value))
-                    .size(props.text_input_size)
-                    .padding(props.text_input_padding)
-                    .width(props.width)
-                    .secure(props.is_secure)
-                    .into()
+                let props = &widget.properties;
+                
+                // Create text_input with placeholder and value
+                let mut input = text_input(
+                    &props.text_input_placeholder,
+                    &props.text_input_value
+                );
+                
+                // Always add on_input in preview (using Noop since it's just preview)
+                input = input.on_input(|text| Message::TextInputChanged(widget.id, text));
+                
+                // Conditionally add on_submit
+                if props.text_input_on_submit {
+                    input = input.on_submit(Message::Submitted(widget.id,));
+                }
+                
+                // Conditionally add on_paste
+                if props.text_input_on_paste {
+                    input = input.on_paste(|text| Message::TextPasted(widget.id, text));
+                }
+                
+                // Apply secure mode
+                if props.is_secure {
+                    input = input.secure(true);
+                }
+                
+                // Apply size (font size)
+                input = input.size(props.text_input_size);
+                
+                // Apply internal padding
+                input = input.padding(props.text_input_padding);
+                
+                // Apply layout properties
+                input = input.width(props.width);
+                
+                // Apply font if not default
+                if props.text_input_font != FontType::Default {
+                    input = input.font(props.text_input_font.into());
+                }
+                
+                // Apply line height if specified
+                if props.text_input_line_height != text::LineHeight::default() {
+                    input = input.line_height(props.text_input_line_height);
+                }
+                
+                // Apply alignment
+                if props.text_input_alignment != ContainerAlignX::Left {
+                    input = input.align_x(props.text_input_alignment);
+                }
+                
+                input.into()
             }
 
             WidgetType::Checkbox => {
@@ -2520,7 +2767,11 @@ impl WidgetVisualizer {
             }
             
             WidgetType::MouseArea => {
+                let props = &widget.properties;
+                
+                // Build the child content
                 let content = if widget.children.is_empty() {
+                    // Show placeholder when no child exists
                     container(text("Mouse Area Content"))
                         .width(Length::Fill)
                         .height(Length::Fill)
@@ -2538,12 +2789,70 @@ impl WidgetVisualizer {
                     self.build_widget_preview(&widget.children[0])
                 };
                 
-                mouse_area(content)
-                    .on_press(Message::Noop)
-                    .on_release(Message::Noop)
-                    .on_enter(Message::Noop)
-                    .on_exit(Message::Noop)
-                    .into()
+                // Start building mouse_area with conditional handlers
+                let mut area = mouse_area(content);
+                
+                // Conditionally add event handlers based on properties
+                if props.mousearea_on_press {
+                    area = area.on_press(Message::Noop);
+                }
+                
+                if props.mousearea_on_release {
+                    area = area.on_release(Message::Noop);
+                }
+                
+                if props.mousearea_on_double_click {
+                    area = area.on_double_click(Message::Noop);
+                }
+                
+                if props.mousearea_on_right_press {
+                    area = area.on_right_press(Message::Noop);
+                }
+                
+                if props.mousearea_on_right_release {
+                    area = area.on_right_release(Message::Noop);
+                }
+                
+                if props.mousearea_on_middle_press {
+                    area = area.on_middle_press(Message::Noop);
+                }
+                
+                if props.mousearea_on_middle_release {
+                    area = area.on_middle_release(Message::Noop);
+                }
+                
+                if props.mousearea_on_scroll {
+                    area = area.on_scroll(|_delta| Message::Noop);
+                }
+                
+                if props.mousearea_on_enter {
+                    area = area.on_enter(Message::Noop);
+                }
+                
+                if props.mousearea_on_move {
+                    area = area.on_move(|_point| Message::Noop);
+                }
+                
+                if props.mousearea_on_exit {
+                    area = area.on_exit(Message::Noop);
+                }
+                
+                // Set mouse interaction if specified
+                if let Some(interaction) = props.mousearea_interaction {
+                    area = area.interaction(interaction.into());
+                }
+                
+                // Apply common layout properties
+                let mut element: Element<_> = area.into();
+                
+                if props.width != Length::Shrink {
+                    element = container(element).width(props.width).into();
+                }
+                if props.height != Length::Shrink {
+                    element = container(element).height(props.height).into();
+                }
+                
+                element
             }
             
             WidgetType::QRCode => {
@@ -2932,6 +3241,8 @@ pub enum Message {
     // Interactive widget messages
     ButtonPressed(WidgetId),
     TextInputChanged(WidgetId, String),
+    Submitted(WidgetId),
+    TextPasted(WidgetId, String),
     CheckboxToggled(WidgetId, bool),
     RadioSelected(WidgetId, usize),
     SliderChanged(WidgetId, f32),
@@ -3102,7 +3413,12 @@ fn can_have_children(widget_type: &WidgetType) -> bool {
 pub struct Properties {
     pub width: Length,
     pub height: Length,
+    pub max_width: Option<f32>,
+    pub max_height: Option<f32>,
+    pub clip: bool, 
     pub padding: Padding,
+    pub widget_id: Option<String>,
+
 
     //draft state for text_inputs
     pub draft_fixed_width: String,
@@ -3110,6 +3426,7 @@ pub struct Properties {
     pub draft_fill_portion_width: String,
     pub draft_fill_portion_height: String,
     pub padding_mode: PaddingMode,
+    
     
     // Container properties
     pub align_x: ContainerAlignX,
@@ -3122,6 +3439,13 @@ pub struct Properties {
     pub shadow_offset: Vector,
     pub shadow_blur: f32,
     pub shadow_color: Color,
+    pub container_sizing_mode: ContainerSizingMode,
+    pub container_center_length: Length,  // Used when center_x/y/both is active
+
+    // Row wrapping
+    pub is_wrapping_row: bool,
+    pub wrapping_vertical_spacing: Option<f32>,
+    pub wrapping_align_x: ContainerAlignX,
     
     // Layout properties (Row/Column)
     pub spacing: f32,
@@ -3140,6 +3464,9 @@ pub struct Properties {
     
     // Button properties
     pub button_style: ButtonStyleType,
+    pub button_on_press_maybe_enabled: bool,
+    pub button_on_press_with_enabled: bool,
+    pub button_on_press_enabled: bool,
     
     // TextInput properties
     pub text_input_value: String,
@@ -3147,6 +3474,12 @@ pub struct Properties {
     pub text_input_size: f32,
     pub text_input_padding: f32,
     pub is_secure: bool,
+    pub text_input_on_submit: bool,
+    pub text_input_on_paste: bool,
+    pub text_input_font: FontType,
+    pub text_input_line_height: text::LineHeight,
+    pub text_input_alignment: ContainerAlignX,
+//    pub text_input_icon: Option<Icon>,
     
     // Checkbox properties
     pub checkbox_checked: bool,
@@ -3239,6 +3572,20 @@ pub struct Properties {
 
     // Pin properties
     pub pin_point: Point,
+    
+    //Mouse_Area properties
+    pub mousearea_on_press: bool,
+    pub mousearea_on_release: bool,
+    pub mousearea_on_double_click: bool,
+    pub mousearea_on_right_press: bool,
+    pub mousearea_on_right_release: bool,
+    pub mousearea_on_middle_press: bool,
+    pub mousearea_on_middle_release: bool,
+    pub mousearea_on_scroll: bool,
+    pub mousearea_on_enter: bool,
+    pub mousearea_on_move: bool,
+    pub mousearea_on_exit: bool,
+    pub mousearea_interaction: Option<MouseInteraction>,
 
     pub show_widget_bounds: bool,
     pub widget_name: String,
@@ -3253,6 +3600,10 @@ impl Default for Properties {
             width: Length::Fill,
             height: Length::Fill,
             padding: Padding::new(0.0),
+            max_width: None,
+            max_height: None,
+            clip: false,
+            widget_id: None,
 
             // Draft properties
             draft_fixed_width: String::new(),
@@ -3270,6 +3621,13 @@ impl Default for Properties {
             shadow_offset: Vector::new(0.0, 2.0),
             shadow_blur: 5.0,
             shadow_color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+            container_sizing_mode: ContainerSizingMode::Manual,
+            container_center_length: Length::Fill,
+
+            // Row wrapping
+            is_wrapping_row: false,
+            wrapping_vertical_spacing: None,
+            wrapping_align_x: ContainerAlignX::Left,
             
             // Layout defaults
             spacing: 0.0,
@@ -3289,6 +3647,9 @@ impl Default for Properties {
             
             // Button defaults
             button_style: ButtonStyleType::Primary,
+            button_on_press_maybe_enabled: false,
+            button_on_press_with_enabled: false,
+            button_on_press_enabled: true,
             
             // TextInput defaults
             text_content: "Sample Text".to_string(),
@@ -3297,6 +3658,11 @@ impl Default for Properties {
             text_input_size: 16.0, // should be None
             text_input_padding: 5.0,
             is_secure: false,
+            text_input_on_submit: false,
+            text_input_on_paste: false,
+            text_input_font: FontType::Default,
+            text_input_line_height: text::LineHeight::default(),
+            text_input_alignment: ContainerAlignX::Left,
             
             // Checkbox defaults
             checkbox_checked: false,
@@ -3405,8 +3771,22 @@ impl Default for Properties {
             // Themer defaults
             themer_theme: None,
 
-            //Pin defaults
+            // Pin defaults
             pin_point: Point::ORIGIN,
+
+            // Mouse_area defaults
+            mousearea_on_press: false,
+            mousearea_on_release: false,
+            mousearea_on_double_click: false,
+            mousearea_on_right_press: false,
+            mousearea_on_right_release: false,
+            mousearea_on_middle_press: false,
+            mousearea_on_middle_release: false,
+            mousearea_on_scroll: false,
+            mousearea_on_enter: false,
+            mousearea_on_move: false,
+            mousearea_on_exit: false,
+            mousearea_interaction: None,
 
             show_widget_bounds: false,
             widget_name: String::new(),
@@ -3440,7 +3820,7 @@ impl Properties {
                 props.text_content = "Click Me!".to_string();
                 props.width = Length::Shrink;
                 props.height = Length::Shrink;
-                props.padding_mode = PaddingMode::Individual;
+                props.padding_mode = PaddingMode::Symmetric;
                 props.padding = Padding { top: 5.0, bottom: 5.0, right: 10.0, left: 10.0 };
             }
             WidgetType::Text => {
@@ -3467,7 +3847,7 @@ impl Properties {
                 props.width = Length::Shrink;
             }
             WidgetType::PickList => {
-                props.padding_mode = PaddingMode::Individual;
+                props.padding_mode = PaddingMode::Symmetric;
                 props.padding = Padding { top: 5.0, bottom: 5.0, right: 10.0, left: 10.0 }; // Same as button's padding
                 props.width = Length::Shrink;
             }
@@ -3658,12 +4038,30 @@ impl std::fmt::Display for FontType {
     }
 }
 
-impl std::fmt::Display for AlignmentOption {
+impl From<Font> for FontType {
+    fn from(a: Font) -> Self {
+        match a {
+            Font::DEFAULT => Self::Default,
+            Font::MONOSPACE => Self::Monospace,
+            _ => Self::Default,
+        }
+    }
+}
+impl From<FontType> for Font {
+    fn from(c: FontType) -> Self {
+        match c {
+            FontType::Monospace => Self::MONOSPACE,
+            FontType::Default => Self::DEFAULT,
+        }
+    }
+}
+
+impl std::fmt::Display for AlignmentXOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AlignmentOption::Start => write!(f, "Start"),
-            AlignmentOption::Center => write!(f, "Center"),
-            AlignmentOption::End => write!(f, "End"),
+            AlignmentXOption::Start => write!(f, "Start"),
+            AlignmentXOption::Center => write!(f, "Center"),
+            AlignmentXOption::End => write!(f, "End"),
         }
     }
 }
@@ -3719,32 +4117,32 @@ impl std::fmt::Display for AlignText {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq,)]
-pub enum AlignmentOption {
+pub enum AlignmentXOption {
     Start,
     Center,
     End,
 }
 
-impl AlignmentOption {
+impl AlignmentXOption {
     // Convert our wrapper TO Iced's Alignment
     fn to_alignment(self) -> Alignment {
         match self {
-            AlignmentOption::Start => Alignment::Start,
-            AlignmentOption::Center => Alignment::Center,
-            AlignmentOption::End => Alignment::End,
+            AlignmentXOption::Start => Alignment::Start,
+            AlignmentXOption::Center => Alignment::Center,
+            AlignmentXOption::End => Alignment::End,
         }
     }
     
     // Convert FROM Iced's Alignment to our wrapper
     fn from_alignment(alignment: Alignment) -> Self {
         match alignment {
-            Alignment::Start => AlignmentOption::Start,
-            Alignment::Center => AlignmentOption::Center,
-            Alignment::End => AlignmentOption::End,
+            Alignment::Start => AlignmentXOption::Start,
+            Alignment::Center => AlignmentXOption::Center,
+            Alignment::End => AlignmentXOption::End,
         }
     }
 }
-impl From<Alignment> for AlignmentOption {
+impl From<Alignment> for AlignmentXOption {
     fn from(a: Alignment) -> Self {
         match a {
             Alignment::Start => Self::Start,
@@ -3753,12 +4151,12 @@ impl From<Alignment> for AlignmentOption {
         }
     }
 }
-impl From<AlignmentOption> for Alignment {
-    fn from(c: AlignmentOption) -> Self {
+impl From<AlignmentXOption> for Alignment {
+    fn from(c: AlignmentXOption) -> Self {
         match c {
-            AlignmentOption::Start => Self::Start,
-            AlignmentOption::Center => Self::Center,
-            AlignmentOption::End => Self::End,
+            AlignmentXOption::Start => Self::Start,
+            AlignmentXOption::Center => Self::Center,
+            AlignmentXOption::End => Self::End,
         }
     }
 }
@@ -3804,6 +4202,44 @@ impl From<AlignmentYOption> for iced::alignment::Vertical {
             AlignmentYOption::Top => Self::Top,
             AlignmentYOption::Center => Self::Center,
             AlignmentYOption::Bottom => Self::Bottom,
+        }
+    }
+}
+
+impl From<iced::alignment::Horizontal> for ContainerAlignX {
+    fn from(v: iced::alignment::Horizontal) -> Self {
+        match v {
+            iced::alignment::Horizontal::Left => Self::Left,
+            iced::alignment::Horizontal::Center => Self::Center,
+            iced::alignment::Horizontal::Right => Self::Right,
+        }
+    }
+}
+impl From<ContainerAlignX> for iced::alignment::Horizontal {
+    fn from(c: ContainerAlignX) -> Self {
+        match c {
+            ContainerAlignX::Left => Self::Left,
+            ContainerAlignX::Center => Self::Center,
+            ContainerAlignX::Right => Self::Right,
+        }
+    }
+}
+
+impl From<iced::alignment::Vertical> for ContainerAlignY {
+    fn from(v: iced::alignment::Vertical) -> Self {
+        match v {
+            iced::alignment::Vertical::Top => Self::Top,
+            iced::alignment::Vertical::Center => Self::Center,
+            iced::alignment::Vertical::Bottom => Self::Bottom,
+        }
+    }
+}
+impl From<ContainerAlignY> for iced::alignment::Vertical {
+    fn from(c: ContainerAlignY) -> Self {
+        match c {
+            ContainerAlignY::Top => Self::Top,
+            ContainerAlignY::Center => Self::Center,
+            ContainerAlignY::Bottom => Self::Bottom,
         }
     }
 }
@@ -4079,4 +4515,154 @@ impl From<TooltipPosition> for tooltip::Position {
         use TooltipPosition::*;
         match p { Top=>tooltip::Position::Top, Bottom=>tooltip::Position::Bottom, Left=>tooltip::Position::Left, Right=>tooltip::Position::Right, FollowCursor=>tooltip::Position::FollowCursor }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerSizingMode {
+    Manual,     // User sets width/height separately
+    CenterX,    // Use center_x(length)
+    CenterY,    // Use center_y(length)
+    Center,     // Use center(length)
+}
+
+impl std::fmt::Display for ContainerSizingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContainerSizingMode::Manual => write!(f, "Manual"),
+            ContainerSizingMode::CenterX => write!(f, "Center X"),
+            ContainerSizingMode::CenterY => write!(f, "Center Y"),
+            ContainerSizingMode::Center => write!(f, "Center Both"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnHandler {
+    None,
+    OnAction,
+    OnActionWith,
+    OnActionMaybe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq,)]
+pub enum MouseInteraction {
+    None,
+    Idle,
+    Pointer,
+    Grab,
+    Text,
+    Crosshair,
+    Working,
+    Grabbing,
+    ResizingHorizontally,
+    ResizingVertically,
+    ResizingDiagonallyUp,
+    ResizingDiagonallyDown,
+    NotAllowed,
+    ZoomIn,
+    ZoomOut,
+    Cell,
+    Move,
+    Copy,
+    Help,
+}
+impl std::fmt::Display for MouseInteraction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MouseInteraction::None => write!(f, "None"),
+            MouseInteraction::Idle => write!(f, "Idle"),
+            MouseInteraction::Pointer => write!(f, "Pointer"),
+            MouseInteraction::Grab => write!(f, "Grab"),
+            MouseInteraction::Text => write!(f, "Text"),
+            MouseInteraction::Crosshair => write!(f, "Crosshair"),
+            MouseInteraction::Working => write!(f, "Working"),
+            MouseInteraction::Grabbing => write!(f, "Grabbing"),
+            MouseInteraction::ResizingHorizontally => write!(f, "ResizingHorizontally"),
+            MouseInteraction::ResizingVertically => write!(f, "ResizingVertically"),
+            MouseInteraction::ResizingDiagonallyUp => write!(f, "ResizingDiagonallyUp"),
+            MouseInteraction::ResizingDiagonallyDown => write!(f, "ResizingDiagonallyDown"),
+            MouseInteraction::NotAllowed => write!(f, "NotAllowed"),
+            MouseInteraction::ZoomIn => write!(f, "ZoomIn"),
+            MouseInteraction::ZoomOut => write!(f, "ZoomOut"),
+            MouseInteraction::Cell => write!(f, "Cell"),
+            MouseInteraction::Move => write!(f, "Move"),
+            MouseInteraction::Copy => write!(f, "Copy"),
+            MouseInteraction::Help => write!(f, "Help"),
+        }
+    }
+}
+impl From<Interaction> for MouseInteraction {
+    fn from(a: Interaction) -> Self {
+        match a {
+            Interaction::None => Self::None,
+            Interaction::Idle => Self::Idle,
+            Interaction::Pointer => Self::Pointer,
+            Interaction::Grab => Self::Grab,
+            Interaction::Text => Self::Text,
+            Interaction::Crosshair => Self::Crosshair,
+            Interaction::Working => Self::Working,
+            Interaction::Grabbing => Self::Grabbing,
+            Interaction::ResizingHorizontally => Self::ResizingHorizontally,
+            Interaction::ResizingVertically => Self::ResizingVertically,
+            Interaction::ResizingDiagonallyUp => Self::ResizingDiagonallyUp,
+            Interaction::ResizingDiagonallyDown => Self::ResizingDiagonallyDown,
+            Interaction::NotAllowed => Self::NotAllowed,
+            Interaction::ZoomIn => Self::ZoomIn,
+            Interaction::ZoomOut => Self::ZoomOut,
+            Interaction::Cell => Self::Cell,
+            Interaction::Move => Self::Move,
+            Interaction::Copy => Self::Copy,
+            Interaction::Help => Self::Help,
+            
+        }
+    }
+}
+impl From<MouseInteraction> for Interaction {
+    fn from(c: MouseInteraction) -> Self {
+        match c {
+            MouseInteraction::None => Self::None,
+            MouseInteraction::Idle => Self::Idle,
+            MouseInteraction::Pointer => Self::Pointer,
+            MouseInteraction::Grab => Self::Grab,
+            MouseInteraction::Text => Self::Text,
+            MouseInteraction::Crosshair => Self::Crosshair,
+            MouseInteraction::Working => Self::Working,
+            MouseInteraction::Grabbing => Self::Grabbing,
+            MouseInteraction::ResizingHorizontally => Self::ResizingHorizontally,
+            MouseInteraction::ResizingVertically => Self::ResizingVertically,
+            MouseInteraction::ResizingDiagonallyUp => Self::ResizingDiagonallyUp,
+            MouseInteraction::ResizingDiagonallyDown => Self::ResizingDiagonallyDown,
+            MouseInteraction::NotAllowed => Self::NotAllowed,
+            MouseInteraction::ZoomIn => Self::ZoomIn,
+            MouseInteraction::ZoomOut => Self::ZoomOut,
+            MouseInteraction::Cell => Self::Cell,
+            MouseInteraction::Move => Self::Move,
+            MouseInteraction::Copy => Self::Copy,
+            MouseInteraction::Help => Self::Help,
+        }
+    }
+}
+
+impl MouseInteraction {
+    pub const ALL: &'static [Self] = &[
+            Self::None,
+            Self::Idle,
+            Self::Pointer,
+            Self::Grab,
+            Self::Text,
+            Self::Crosshair,
+            Self::Working,
+            Self::Grabbing,
+            Self::ResizingHorizontally,
+            Self::ResizingVertically,
+            Self::ResizingDiagonallyUp,
+            Self::ResizingDiagonallyDown,
+            Self::NotAllowed,
+            Self::ZoomIn,
+            Self::ZoomOut,
+            Self::Cell,
+            Self::Move,
+            Self::Copy,
+            Self::Help,
+    ];
 }

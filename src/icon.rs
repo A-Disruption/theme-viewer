@@ -1,6 +1,6 @@
 // Generated automatically by iced_fontello at build time.
 // Do not edit manually. Source: ../fonts/fonts.toml
-// a94c08cbdc34881f47f15d9df59536fdbc41a9172d08899275abb0b5b609137c
+// 85ba5fa665b9e3a7ab38cf88812d3f19fcadcc899d3840f1401b5d289b62acbf
 use iced::widget::{text, Text};
 use iced::Font;
 
@@ -36,6 +36,10 @@ pub fn global<'a>() -> Text<'a> {
 
 pub fn home<'a>() -> Text<'a> {
     icon("\u{2302}")
+}
+
+pub fn info<'a>() -> Text<'a> {
+    icon("\u{E705}")
 }
 
 pub fn plus<'a>() -> Text<'a> {

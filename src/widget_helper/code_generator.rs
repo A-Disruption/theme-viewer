@@ -1,9 +1,6 @@
 use iced::{Color, Element, Length, Padding, widget::{column, container, space::horizontal, row, scrollable, text}, Background, Border, Theme};
-use crate::widget_helper::{
-    Widget, WidgetType, Properties, WidgetId, WidgetHierarchy, 
-    ContainerAlignX, ContainerAlignY, ButtonStyleType, FontType,
-    Orientation, ContentFitChoice, TooltipPosition, type_system::{EnumDef, TypeSystem}
-};
+use crate::widget_helper::*;
+use crate::widget_helper::type_system::EnumDef;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -563,7 +560,7 @@ impl<'a> CodeGenerator<'a> {
         self.add_plain(" (");
         self.add_keyword("Self");
         self.add_plain( ", " );
-        self.add_function("iced");
+        self.add_number("iced");
         self.add_operator("::");
         self.add_type("Task");
         self.add_plain("<");
@@ -593,7 +590,11 @@ impl<'a> CodeGenerator<'a> {
         self.add_newline();
         
         self.add_indent();
-        self.add_plain("iced::Task::none()");
+        self.add_number("iced");
+        self.add_operator("::");
+        self.add_type("Task");
+        self.add_operator("::");
+        self.add_plain("none()");
         self.add_newline();
         
         self.indent_level -= 1;
@@ -938,87 +939,137 @@ impl<'a> CodeGenerator<'a> {
         self.add_plain("}");
     }
 
-    // Updated generate_imports to only include used widgets
     fn generate_imports(&mut self) {
+        // Scan the entire hierarchy
+        let mut tracker = ImportTracker::new();
+        tracker.scan_widget(&self.hierarchy.root().clone());
+        
         self.add_keyword("use");
-        self.add_plain(" ");
-        self.add_type("iced");
-        self.add_operator("::");
+        self.add_number(" iced::");
         self.add_plain("{");
         self.add_newline();
         self.indent_level += 1;
         
-        // Core imports always needed
+        // Core types - build list
+        let mut core_imports = Vec::new();
+        
+        if tracker.uses_length {
+            core_imports.push("Length");
+        }
+        if tracker.uses_alignment {
+            core_imports.push("Alignment");
+        }
+        if tracker.uses_color {
+            core_imports.push("Color");
+        }
+        if tracker.uses_padding {
+            core_imports.push("Padding");
+        }
+        if tracker.uses_font {
+            core_imports.push("Font");
+        }
+        if tracker.uses_border {
+            core_imports.push("Border");
+        }
+        if tracker.uses_shadow {
+            core_imports.push("Shadow");
+        }
+        if tracker.uses_background {
+            core_imports.push("Background");
+        }
+        if tracker.uses_vector {
+            core_imports.push("Vector");
+        }
+        if tracker.uses_point {
+            core_imports.push("Point");
+        }
+        
+        // Element, Theme, and Task are always needed
+        core_imports.push("Element");
+        core_imports.push("Theme");
+        core_imports.push("Task");
+
         self.add_indent();
-        self.add_type("Application");
-        self.add_plain(", ");
-        self.add_type("Element");
-        self.add_plain(", ");
-        self.add_type("Settings");
-        self.add_plain(", ");
-        self.add_type("Theme");
-        self.add_plain(",");
+        core_imports.into_iter().for_each(|import| {
+            self.add_type(import);
+            self.add_plain(",");
+        });
         self.add_newline();
         
-        // Add other core types if needed
-        self.add_indent();
-        let mut core_types = vec![];
-        if self.used_widgets.iter().any(|&w| matches!(w, "container" | "row" | "column" | "text" | "button")) {
-            core_types.push("Length");
-        }
-        if self.used_widgets.contains(&"container") {
-            core_types.push("Padding");
-            core_types.push("Alignment");
-        }
-        if self.used_widgets.contains(&"image") || self.used_widgets.contains(&"svg") {
-            core_types.push("ContentFit");
+/*         if !core_imports.is_empty() {
+            self.add_indent();
+            self.add_plain(&core_imports.join(", "));
+            self.add_plain(",");
+            self.add_newline();
+        } */
+        
+        // Widget imports
+        if !tracker.used_widgets.is_empty() {
+            self.add_indent();
+            self.add_number("widget");
+            self.add_operator("::");
+            self.add_plain("{");
+            let mut widgets: Vec<_> = tracker.used_widgets.iter().map(|s| *s).collect();
+            widgets.sort();
+            self.add_plain(&widgets.join(", "));
+            self.add_plain("},");
+            self.add_newline();
         }
         
-        for (i, t) in core_types.iter().enumerate() {
-            if i > 0 {
-                self.add_plain(", ");
+        // Mouse module - only if MouseArea is used
+        if tracker.uses_mouse {
+            self.add_indent();
+            self.add_plain("mouse");
+            
+            let mut mouse_items = Vec::new();
+            if tracker.uses_mouse_interaction {
+                mouse_items.push("Interaction");
             }
-            self.add_type(t);
-        }
-        if !core_types.is_empty() {
+            if tracker.uses_mouse_scroll_delta {
+                mouse_items.push("ScrollDelta");
+            }
+            
+            if !mouse_items.is_empty() {
+                self.add_plain("::{");
+                self.add_plain(&mouse_items.join(", "));
+                self.add_plain("}");
+            }
             self.add_plain(",");
             self.add_newline();
         }
         
-        // Widget imports - only what's used
-        self.add_indent();
-        self.add_plain("widget::{");
-        self.add_newline();
-        self.indent_level += 1;
-        
-        let mut widgets = Vec::new();
-        for &widget in &self.used_widgets {
-            widgets.push(widget);
-        }
-        widgets.sort(); // Sort for consistent output
-        
-        // Group widgets into lines
-        let chunks: Vec<Vec<&str>> = widgets.chunks(6).map(|c| c.to_vec()).collect();
-        for (i, chunk) in chunks.iter().enumerate() {
+        // Text module - only if text properties are used
+        if tracker.uses_text_line_height || tracker.uses_text_wrapping || 
+        tracker.uses_text_shaping || tracker.uses_text_alignment {
             self.add_indent();
-            for (j, widget) in chunk.iter().enumerate() {
-                if j > 0 {
-                    self.add_plain(", ");
-                }
-                self.add_plain(widget);
+            self.add_plain("widget::text");
+            
+            let mut text_items = Vec::new();
+            if tracker.uses_text_line_height {
+                text_items.push("LineHeight");
             }
-            if i < chunks.len() - 1 {
-                self.add_plain(",");
+            if tracker.uses_text_wrapping {
+                text_items.push("Wrapping");
             }
+            if tracker.uses_text_shaping {
+                text_items.push("Shaping");
+            }
+            if tracker.uses_text_alignment {
+                text_items.push("Alignment as TextAlignment");
+            }
+            
+            if !text_items.is_empty() {
+                self.add_plain("::{");
+                self.add_plain(&text_items.join(", "));
+                self.add_plain("}");
+            }
+            self.add_plain(",");
             self.add_newline();
         }
         
         self.indent_level -= 1;
-        self.add_indent();
-        self.add_plain("},");
-        self.add_newline();
-        self.indent_level -= 1;
         self.add_plain("};");
+        self.add_newline();
     }
 
     // Collect which widgets are actually used
@@ -1104,12 +1155,31 @@ impl<'a> CodeGenerator<'a> {
                 self.add_newline();
             }
             WidgetType::TextInput => {
+                let name = self.get_widget_name(widget.id);
+                let props = &widget.properties;
+                
                 self.add_indent();
                 self.add_plain(&format!("{}Changed", to_pascal_case(&name)));
                 self.add_plain("(");
                 self.add_type("String");
                 self.add_plain("),");
                 self.add_newline();
+                
+                if props.text_input_on_submit {
+                    self.add_indent();
+                    self.add_plain(&format!("{}Submitted", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                
+                if props.text_input_on_paste {
+                    self.add_indent();
+                    self.add_plain(&format!("{}Pasted", to_pascal_case(&name)));
+                    self.add_plain("(");
+                    self.add_type("String");
+                    self.add_plain("),");
+                    self.add_newline();
+                }
             }
             WidgetType::Checkbox => {
                 self.add_indent();
@@ -1206,6 +1276,77 @@ impl<'a> CodeGenerator<'a> {
                     self.add_indent();
                     self.add_plain(&format!("{}OnClose", to_pascal_case(&name)));
                     self.add_plain(",");
+                    self.add_newline();
+                }
+            }
+            WidgetType::MouseArea => {
+                let name = self.get_widget_name(widget.id);
+                let props = &widget.properties;
+                
+                if props.mousearea_on_press {
+                    self.add_indent();
+                    self.add_plain(&format!("{}Pressed", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                if props.mousearea_on_release {
+                    self.add_indent();
+                    self.add_plain(&format!("{}Released", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                if props.mousearea_on_double_click {
+                    self.add_indent();
+                    self.add_plain(&format!("{}DoubleClicked", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                if props.mousearea_on_right_press {
+                    self.add_indent();
+                    self.add_plain(&format!("{}RightPressed", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                if props.mousearea_on_right_release {
+                    self.add_indent();
+                    self.add_plain(&format!("{}RightReleased", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                if props.mousearea_on_middle_press {
+                    self.add_indent();
+                    self.add_plain(&format!("{}MiddlePressed", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                if props.mousearea_on_middle_release {
+                    self.add_indent();
+                    self.add_plain(&format!("{}MiddleReleased", to_pascal_case(&name)));
+                    self.add_plain(",");
+                    self.add_newline();
+                }
+                if props.mousearea_on_scroll {
+                    self.add_indent();
+                    self.add_plain(&format!("{}Scrolled", to_pascal_case(&name)));
+                    self.add_plain("(mouse::ScrollDelta),");
+                    self.add_newline();
+                }
+                if props.mousearea_on_enter {
+                    self.add_indent();
+                    self.add_plain(&format!("{}Entered", to_pascal_case(&name)));
+                    self.add_plain("(Point),");
+                    self.add_newline();
+                }
+                if props.mousearea_on_move {
+                    self.add_indent();
+                    self.add_plain(&format!("{}Moved", to_pascal_case(&name)));
+                    self.add_plain("(Point),");
+                    self.add_newline();
+                }
+                if props.mousearea_on_exit {
+                    self.add_indent();
+                    self.add_plain(&format!("{}Exited", to_pascal_case(&name)));
+                    self.add_plain("(Point),");
                     self.add_newline();
                 }
             }
@@ -1357,6 +1498,10 @@ impl<'a> CodeGenerator<'a> {
                 self.add_newline();
             }
             WidgetType::TextInput => {
+                let name = self.get_widget_name(widget.id);
+                let props = &widget.properties;
+                
+                // Always generate the Changed handler
                 self.add_indent();
                 self.add_type("Message");
                 self.add_operator("::");
@@ -1382,6 +1527,67 @@ impl<'a> CodeGenerator<'a> {
                 self.add_indent();
                 self.add_plain("}");
                 self.add_newline();
+                
+                // Conditionally generate on_submit handler
+                if props.text_input_on_submit {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Submitted", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle text input submission (Enter key pressed)");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_comment(&format!("// Current value: self.{}_value", to_snake_case(&name)));
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Conditionally generate on_paste handler
+                if props.text_input_on_paste {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Pasted", to_pascal_case(&name)));
+                    self.add_plain("(");
+                    self.add_identifier("pasted_text");
+                    self.add_plain(") ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle text being pasted");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_comment("// pasted_text contains the pasted string");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_comment("// Note: on_input will also fire with the new combined value");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_keyword("self");
+                    self.add_operator(".");
+                    self.add_identifier(&format!("{}_value", to_snake_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=");
+                    self.add_plain(" ");
+                    self.add_identifier("pasted_text");
+                    self.add_plain(";");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
             }
             WidgetType::Checkbox => {
                 self.add_indent();
@@ -1686,6 +1892,321 @@ impl<'a> CodeGenerator<'a> {
                     self.add_newline();
                 }
             }
+            WidgetType::MouseArea => {
+                let name = self.get_widget_name(widget.id);
+                let props = &widget.properties;
+                
+                // Left button press
+                if props.mousearea_on_press {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Pressed", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle left mouse button press");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Left button release
+                if props.mousearea_on_release {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Released", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle left mouse button release");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Double click
+                if props.mousearea_on_double_click {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}DoubleClicked", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle double click");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_comment("// Note: on_press and on_release will also fire");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Right button press
+                if props.mousearea_on_right_press {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}RightPressed", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle right mouse button press");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Right button release
+                if props.mousearea_on_right_release {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}RightReleased", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle right mouse button release");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Middle button press
+                if props.mousearea_on_middle_press {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}MiddlePressed", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle middle mouse button press");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Middle button release
+                if props.mousearea_on_middle_release {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}MiddleReleased", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle middle mouse button release");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Scroll with delta parameter
+                if props.mousearea_on_scroll {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Scrolled", to_pascal_case(&name)));
+                    self.add_plain("(");
+                    self.add_identifier("delta");
+                    self.add_plain(") ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle scroll event");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_comment("// delta is mouse::ScrollDelta enum:");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_comment("//   Lines { x: f32, y: f32 } - scroll in lines");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_comment("//   Pixels { x: f32, y: f32 } - scroll in pixels");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_keyword("match");
+                    self.add_plain(" ");
+                    self.add_identifier("delta");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_plain("mouse::ScrollDelta::Lines { ");
+                    self.add_identifier("x");
+                    self.add_plain(", ");
+                    self.add_identifier("y");
+                    self.add_plain(" } ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle line-based scrolling");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_plain("mouse::ScrollDelta::Pixels { ");
+                    self.add_identifier("x");
+                    self.add_plain(", ");
+                    self.add_identifier("y");
+                    self.add_plain(" } ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle pixel-based scrolling");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Mouse enter
+                if props.mousearea_on_enter {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Entered", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle mouse entering the area");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Mouse move with point parameter
+                if props.mousearea_on_move {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Moved", to_pascal_case(&name)));
+                    self.add_plain("(");
+                    self.add_identifier("point");
+                    self.add_plain(") ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle mouse movement within the area");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_comment("// point is Point { x: f32, y: f32 } relative to the widget's bounds");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_keyword("let");
+                    self.add_plain(" ");
+                    self.add_identifier("x");
+                    self.add_plain(" ");
+                    self.add_operator("=");
+                    self.add_plain(" ");
+                    self.add_identifier("point");
+                    self.add_operator(".");
+                    self.add_identifier("x");
+                    self.add_plain(";");
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_keyword("let");
+                    self.add_plain(" ");
+                    self.add_identifier("y");
+                    self.add_plain(" ");
+                    self.add_operator("=");
+                    self.add_plain(" ");
+                    self.add_identifier("point");
+                    self.add_operator(".");
+                    self.add_identifier("y");
+                    self.add_plain(";");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+                
+                // Mouse exit
+                if props.mousearea_on_exit {
+                    self.add_indent();
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Exited", to_pascal_case(&name)));
+                    self.add_plain(" ");
+                    self.add_operator("=>");
+                    self.add_plain(" {");
+                    self.add_newline();
+                    self.indent_level += 1;
+                    self.add_indent();
+                    self.add_comment("// Handle mouse leaving the area");
+                    self.add_newline();
+                    self.indent_level -= 1;
+                    self.add_indent();
+                    self.add_plain("}");
+                    self.add_newline();
+                }
+
+                self.add_plain(",");
+
+            }
             _ => {}
         }
         
@@ -1705,12 +2226,14 @@ impl<'a> CodeGenerator<'a> {
         self.add_operator("'a");
         self.add_plain(">");
         self.add_plain("(");
-        self.add_operator("&'a");
+        self.add_operator("&'a ");
         self.add_type("self");
         self.add_plain(")");
         self.add_operator(" -> ");
         self.add_type("Element");
         self.add_plain("<");
+        self.add_operator("'a");
+        self.add_plain(", ");
         self.add_operator("Message");
         self.add_plain("> {");
         self.add_newline();
@@ -1730,7 +2253,6 @@ impl<'a> CodeGenerator<'a> {
             self.generate_widget_creation(root, true);
         }
 
-        self.add_newline();
         self.add_indent();
         self.add_operator(".");
         self.add_function("into");
@@ -1770,6 +2292,7 @@ impl<'a> CodeGenerator<'a> {
                 self.add_indent();
                 self.add_plain(")");
                 self.generate_container_properties(props);
+                self.add_newline();
             }
             WidgetType::Row => {
                 self.add_indent();
@@ -1798,7 +2321,44 @@ impl<'a> CodeGenerator<'a> {
                 self.indent_level -= 1;
                 self.add_indent();
                 self.add_plain("]");
+                
+                // Generate row properties
                 self.generate_layout_properties(props, true);
+                
+                // NEW: If wrapping, add .wrap() and wrapping properties
+                if props.is_wrapping_row {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("wrap");
+                    self.add_plain("()");
+                    
+                    // Vertical spacing
+                    if let Some(v_spacing) = props.wrapping_vertical_spacing {
+                        self.add_newline();
+                        self.add_indent();
+                        self.add_operator(".");
+                        self.add_function("vertical_spacing");
+                        self.add_plain("(");
+                        self.add_number(&format!("{:.1}", v_spacing));
+                        self.add_plain(")");
+                    }
+                    
+                    // Horizontal alignment (only if not Left/default)
+                    if !matches!(props.wrapping_align_x, ContainerAlignX::Left) {
+                        self.add_newline();
+                        self.add_indent();
+                        self.add_operator(".");
+                        self.add_function("align_x");
+                        self.add_plain("(");
+                        match props.wrapping_align_x {
+                            ContainerAlignX::Left => self.add_type("Alignment::Start"),
+                            ContainerAlignX::Center => self.add_type("Alignment::Center"),
+                            ContainerAlignX::Right => self.add_type("Alignment::End"),
+                        }
+                        self.add_plain(")");
+                    }
+                }
             }
             WidgetType::Column => {
                 self.add_indent();
@@ -1839,18 +2399,7 @@ impl<'a> CodeGenerator<'a> {
                 self.add_string(&format!("\"{}\"", props.text_content));
 //                self.add_plain(")");
                 self.add_plain(")");
-                self.add_newline();
-                self.indent_level += 1;
-                self.add_indent();
-                self.add_operator(".");
-                self.add_function("on_press");
-                self.add_plain("(");
-                self.add_type("Message");
-                self.add_operator("::");
-                self.add_plain(&format!("{}Pressed", to_pascal_case(&name)));
-                self.add_plain(")");
-                self.generate_button_properties(props);
-                self.indent_level -= 1;
+                self.generate_button_properties(widget, props);
             }
             WidgetType::Text => {
                 self.add_indent();
@@ -1862,6 +2411,8 @@ impl<'a> CodeGenerator<'a> {
             }
             WidgetType::TextInput => {
                 let name = self.get_widget_name(widget.id);
+                let props = &widget.properties;
+                
                 self.add_indent();
                 self.add_function("text_input");
                 self.add_plain("(");
@@ -1873,30 +2424,148 @@ impl<'a> CodeGenerator<'a> {
                     self.add_operator(".");
                     self.add_identifier(&format!("{}_value", to_snake_case(&name)));
                 } else {
-                    self.add_string(&format!("\"{}\"", props.text_input_value));
+                    self.add_string("\"\"");
                 }
                 self.add_plain(")");
-                self.add_newline();
                 self.indent_level += 1;
+                
+                // Always add on_input
+                self.add_newline();
                 self.add_indent();
                 self.add_operator(".");
                 self.add_function("on_input");
                 self.add_plain("(");
-                if use_self {
-                    self.add_type("Message");
-                    self.add_operator("::");
-                    self.add_plain(&format!("{}Changed", to_pascal_case(&name)));
-                } else {
-                    self.add_operator("|");
-                    self.add_identifier("_");
-                    self.add_operator("|");
-                    self.add_plain(" ");
-                    self.add_type("Message");
-                    self.add_operator("::");
-                    self.add_plain("Noop");
-                }
+                self.add_type("Message");
+                self.add_operator("::");
+                self.add_plain(&format!("{}Changed", to_pascal_case(&name)));
                 self.add_plain(")");
-                self.generate_text_input_properties(props);
+                
+                // Conditionally add on_submit
+                if props.text_input_on_submit {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_submit");
+                    self.add_plain("(");
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Submitted", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+                
+                // Conditionally add on_paste
+                if props.text_input_on_paste {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_paste");
+                    self.add_plain("(");
+                    self.add_type("Message");
+                    self.add_operator("::");
+                    self.add_plain(&format!("{}Pasted", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+                
+                // Add secure if enabled
+                if props.is_secure {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("secure");
+                    self.add_plain("(");
+                    self.add_plain("true");
+                    self.add_plain(")");
+                }
+                
+                // Add font if not default
+                if props.text_input_font != FontType::Default {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("font");
+                    self.add_plain("(");
+                    match props.text_input_font {
+                        FontType::Monospace => {
+                            self.add_type("Font");
+                            self.add_operator("::");
+                            self.add_plain("MONOSPACE");
+                        }
+                        _ => {
+                            self.add_type("Font");
+                            self.add_operator("::");
+                            self.add_plain("default()");
+                        }
+                    }
+                    self.add_plain(")");
+                }
+                
+                // Add size
+                self.add_newline();
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("size");
+                self.add_plain("(");
+                self.add_plain(&format!("{}", props.text_input_size));
+                self.add_plain(")");
+                
+                // Add padding
+                self.add_newline();
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("padding");
+                self.add_plain("(");
+                self.add_plain(&format!("{}", props.text_input_padding));
+                self.add_plain(")");
+                
+                // Add line_height if not default
+                if props.text_input_line_height != text::LineHeight::default() {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("line_height");
+                    self.add_plain("(");
+                    // Generate line_height value based on type
+                    match props.text_input_line_height {
+                        text::LineHeight::Absolute(pixels) => {
+                            self.add_plain(&format!("{}", pixels.0));
+                        }
+                        text::LineHeight::Relative(factor) => {
+                            self.add_plain("text::LineHeight::Relative(");
+                            self.add_plain(&format!("{}", factor));
+                            self.add_plain(")");
+                        }
+                    }
+                    self.add_plain(")");
+                }
+                
+                // Add alignment if not left
+                if props.text_input_alignment != ContainerAlignX::Left {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("align_x");
+                    self.add_plain("(");
+                    //self.add_plain("alignment::Horizontal::");
+                    self.add_plain("Alignment::");
+                    match props.text_input_alignment {
+                        ContainerAlignX::Left => self.add_plain("Start"),
+                        ContainerAlignX::Center => self.add_plain("Center"),
+                        ContainerAlignX::Right => self.add_plain("End"),
+                    }
+                    self.add_plain(")");
+                }
+                
+                // Add width
+                if !matches!(props.width, Length::Fill) {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("width");
+                    self.add_plain("(");
+                    self.add_length(props.width);
+                    self.add_plain(")");
+                }
+                
                 self.indent_level -= 1;
             }
             WidgetType::Checkbox => {
@@ -2397,7 +3066,6 @@ impl<'a> CodeGenerator<'a> {
                 // Now add optional methods
                 if props.combobox_use_on_input {
                     self.add_newline();
-                    self.indent_level += 1;
                     self.add_indent();
                     self.add_operator(".");
                     self.add_function("on_input");
@@ -2416,12 +3084,10 @@ impl<'a> CodeGenerator<'a> {
                         self.add_plain("Noop");
                     }
                     self.add_plain(")");
-                    self.indent_level -= 1;
                 }
                 
                 if props.combobox_use_on_option_hovered {
                     self.add_newline();
-                    self.indent_level += 1;
                     self.add_indent();
                     self.add_operator(".");
                     self.add_function("on_option_hovered");
@@ -2440,12 +3106,10 @@ impl<'a> CodeGenerator<'a> {
                         self.add_plain("Noop");
                     }
                     self.add_plain(")");
-                    self.indent_level -= 1;
                 }
                 
                 if props.combobox_use_on_open {
                     self.add_newline();
-                    self.indent_level += 1;
                     self.add_indent();
                     self.add_operator(".");
                     self.add_function("on_open");
@@ -2460,12 +3124,10 @@ impl<'a> CodeGenerator<'a> {
                         self.add_plain("Noop");
                     }
                     self.add_plain(")");
-                    self.indent_level -= 1;
                 }
                 
                 if props.combobox_use_on_close {
                     self.add_newline();
-                    self.indent_level += 1;
                     self.add_indent();
                     self.add_operator(".");
                     self.add_function("on_close");
@@ -2480,7 +3142,6 @@ impl<'a> CodeGenerator<'a> {
                         self.add_plain("Noop");
                     }
                     self.add_plain(")");
-                    self.indent_level -= 1;
                 }
                 
                 self.generate_combobox_properties(props);
@@ -2548,33 +3209,140 @@ impl<'a> CodeGenerator<'a> {
                 self.add_function("mouse_area");
                 self.add_plain("(");
                 self.add_newline();
-                self.indent_level += 1;
                 
-                if widget.children.is_empty() {
-                    self.add_indent();
-                    self.add_function("container");
-                    self.add_plain("(");
-                    self.add_function("text");
-                    self.add_plain("(");
-                    self.add_string("\"Content\"");
-                    self.add_plain("))");
-                } else {
+                // Generate child
+                if !widget.children.is_empty() {
                     self.generate_widget_creation(&widget.children[0], use_self);
                 }
                 
-                self.add_newline();
-                self.indent_level -= 1;
-                self.add_indent();
                 self.add_plain(")");
-                self.add_newline();
                 self.indent_level += 1;
-                self.add_indent();
-                self.add_operator(".");
-                self.add_function("on_press");
-                self.add_plain("(");
-                self.add_type("Message");
-                self.add_operator("::");
-                self.add_plain("MousePressed)");
+                
+                let name = self.get_widget_name(widget.id);
+                
+                // Conditionally add event handlers
+                if props.mousearea_on_press {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_press");
+                    self.add_plain("(Message::");
+                    self.add_plain(&format!("{}Pressed", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+
+                if props.mousearea_on_release {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_press");
+                    self.add_plain("(Message::");
+                    self.add_plain(&format!("{}Released", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+
+                if props.mousearea_on_double_click {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_double_click");
+                    self.add_plain("(Message::");
+                    self.add_plain(&format!("{}DoubleClicked", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+
+                if props.mousearea_on_right_press {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_right_press");
+                    self.add_plain("(Message::");
+                    self.add_plain(&format!("{}RightPressed", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+
+                if props.mousearea_on_right_release {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_right_release");
+                    self.add_plain("(Message::");
+                    self.add_plain(&format!("{}RightReleased", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+
+                if props.mousearea_on_middle_press {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_middle_press");
+                    self.add_plain("(Message::");
+                    self.add_plain(&format!("{}MiddlePressed", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+
+                if props.mousearea_on_middle_release {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_middle_release");
+                    self.add_plain("(Message::");
+                    self.add_plain(&format!("{}MiddleReleased", to_pascal_case(&name)));
+                    self.add_plain(")");
+                }
+                
+                if props.mousearea_on_scroll {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_scroll");
+                    self.add_plain("(|delta| Message::");
+                    self.add_plain(&format!("{}Scrolled", to_pascal_case(&name)));
+                    self.add_plain("(delta))");
+                }
+
+                if props.mousearea_on_enter {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_enter");
+                    self.add_plain("(|point| Message::");
+                    self.add_plain(&format!("{}Entered", to_pascal_case(&name)));
+                    self.add_plain("(point))");
+                }
+                
+                if props.mousearea_on_move {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_move");
+                    self.add_plain("(|point| Message::");
+                    self.add_plain(&format!("{}Moved", to_pascal_case(&name)));
+                    self.add_plain("(point))");
+                }
+
+                if props.mousearea_on_exit {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("on_exit");
+                    self.add_plain("(|point| Message::");
+                    self.add_plain(&format!("{}Exited", to_pascal_case(&name)));
+                    self.add_plain("(point))");
+                }
+                
+                if let Some(interaction) = props.mousearea_interaction {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("interaction");
+                    self.add_plain("(Interaction::");
+                    self.add_plain(&format!("{:?}", interaction));
+                    self.add_plain(")");
+                }
+                
+                // Add layout properties
+                //self.generate_layout_properties(props, false);
                 self.indent_level -= 1;
             }
             
@@ -2826,31 +3594,153 @@ impl<'a> CodeGenerator<'a> {
     }
 
     fn generate_container_properties(&mut self, props: &Properties) {
-        // Width
-        if !matches!(props.width, Length::Fill) {
+        // Widget ID
+        if let Some(ref id) = props.widget_id {
+            if !id.is_empty() {
+                self.add_newline();
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("id");
+                self.add_plain("(");
+                self.add_string(&format!("\"{}\"", id));
+                self.add_plain(")");
+            }
+        }
+
+        // Sizing
+        match props.container_sizing_mode {
+            ContainerSizingMode::Manual => {
+                // Width
+                if !matches!(props.width, Length::Fill) {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("width");
+                    self.add_plain("(");
+                    self.add_length(props.width);
+                    self.add_plain(")");
+                }
+                
+                // Height
+                if !matches!(props.height, Length::Fill) {
+                    self.add_newline();
+                    self.add_indent();
+                    self.add_operator(".");
+                    self.add_function("height");
+                    self.add_plain("(");
+                    self.add_length(props.height);
+                    self.add_plain(")");
+                }
+                
+                // Alignment
+                match props.align_x {
+                    ContainerAlignX::Left => {},
+                    ContainerAlignX::Center => {
+                        self.add_newline();
+                        self.add_indent();
+                        self.add_operator(".");
+                        self.add_function("align_x");
+                        self.add_plain("(");
+                        self.add_type("Alignment::Center");
+                        self.add_plain(")");
+                    }
+                    ContainerAlignX::Right => {
+                        self.add_newline();
+                        self.add_indent();
+                        self.add_operator(".");
+                        self.add_function("align_x");
+                        self.add_plain("(");
+                        self.add_type("Alignment::End");
+                        self.add_plain(")");
+                    }
+                }
+                match props.align_y {
+                    ContainerAlignY::Top => {},
+                    ContainerAlignY::Center => {
+                        self.add_newline();
+                        self.add_indent();
+                        self.add_operator(".");
+                        self.add_function("align_y");
+                        self.add_plain("(");
+                        self.add_type("Alignment::Center");
+                        self.add_plain(")");
+                    }
+                    ContainerAlignY::Bottom => {
+                        self.add_newline();
+                        self.add_indent();
+                        self.add_operator(".");
+                        self.add_function("align_y");
+                        self.add_plain("(");
+                        self.add_type("Alignment::End");
+                        self.add_plain(")");
+                    }
+                }
+            }
+            ContainerSizingMode::CenterX => {
+                self.add_newline();
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("center_x");
+                self.add_plain("(");
+                self.add_length(props.container_center_length);
+                self.add_plain(")");
+            }
+            ContainerSizingMode::CenterY => {
+                self.add_newline();
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("center_y");
+                self.add_plain("(");
+                self.add_length(props.container_center_length);
+                self.add_plain(")");
+            }
+            ContainerSizingMode::Center => {
+                self.add_newline();
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("center");
+                self.add_plain("(");
+                self.add_length(props.container_center_length);
+                self.add_plain(")");
+            }
+        }
+
+        // Max width
+        if let Some(max_w) = props.max_width {
             self.add_newline();
             self.add_indent();
             self.add_operator(".");
-            self.add_function("width");
+            self.add_function("max_width");
             self.add_plain("(");
-            self.add_length(props.width);
+            self.add_number(&format!("{:.1}", max_w));
             self.add_plain(")");
         }
-        
-        // Height
-        if !matches!(props.height, Length::Fill) {
+
+        // Max Height
+        if let Some(max_h) = props.max_height {
             self.add_newline();
             self.add_indent();
             self.add_operator(".");
-            self.add_function("height");
+            self.add_function("max_height");
             self.add_plain("(");
-            self.add_length(props.height);
+            self.add_number(&format!("{:.1}", max_h));
             self.add_plain(")");
         }
         
         // Padding
         if props.padding != Padding::ZERO {
-            self.generate_padding(&props.padding);
+            self.generate_padding(&props.padding, props.padding_mode);
+        }
+
+        // Clip
+        if props.clip {
+            self.add_newline();
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("clip");
+            self.add_plain("(");
+            self.add_keyword("true");
+            self.add_plain(")");
         }
     }
 
@@ -2865,6 +3755,34 @@ impl<'a> CodeGenerator<'a> {
             self.add_number(&format!("{}", props.spacing));
             self.add_plain(")");
         }
+
+        // Alignment
+        if !matches!(props.align_items, Alignment::Start) {
+            self.add_newline();
+            self.add_indent();
+            self.add_operator(".");
+            
+            if is_row {
+                // Row aligns children vertically
+                self.add_function("align_y");
+                self.add_plain("(");
+                match props.align_items {
+                    Alignment::Start => self.add_type("Alignment::Start"),
+                    Alignment::Center => self.add_type("Alignment::Center"),
+                    Alignment::End => self.add_type("Alignment::End"),
+                }
+            } else {
+                // Column aligns children horizontally
+                self.add_function("align_x");
+                self.add_plain("(");
+                match props.align_items {
+                    Alignment::Start => self.add_type("Alignment::Start"),
+                    Alignment::Center => self.add_type("Alignment::Center"),
+                    Alignment::End => self.add_type("Alignment::End"),
+                }
+            }
+            self.add_plain(")");
+        }
         
         // Width
         if !matches!(props.width, Length::Shrink) {
@@ -2876,27 +3794,110 @@ impl<'a> CodeGenerator<'a> {
             self.add_length(props.width);
             self.add_plain(")");
         }
+
+        // Max_Width for Column only
+        if !is_row {
+            if let Some(max_w) = props.max_width {
+                self.add_newline();
+                self.add_indent();
+                self.add_operator(".");
+                self.add_function("max_width");
+                self.add_plain("(");
+                self.add_number(&format!("{:.1}", max_w));
+                self.add_plain(")");
+            }
+        }
         
         // Height
         if !matches!(props.height, Length::Shrink) {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("height");
             self.add_plain("(");
             self.add_length(props.height);
             self.add_plain(")");
-            self.indent_level -= 1;
         }
 
         // Padding
         if props.padding != Padding::ZERO {
-            self.generate_padding(&props.padding);
+            self.generate_padding(&props.padding, props.padding_mode);
+        }
+
+        // Clip
+        if props.clip {
+            self.add_newline();
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("clip");
+            self.add_plain("(");
+            self.add_keyword("true");
+            self.add_plain(")");
         }
     }
 
-    fn generate_button_properties(&mut self, props: &Properties) {
+    fn generate_button_properties(&mut self, widget: &Widget, props: &Properties) {
+        let mut name = props.widget_name.clone();
+        if name.len() == 0 {
+            name = self.get_widget_name(widget.id);
+        }
+
+        if props.button_on_press_enabled {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("on_press");
+            self.add_plain("(");
+            self.add_type("Message");
+            self.add_operator("::");
+            self.add_plain(&format!("{}Pressed", to_pascal_case(&name)));
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+
+        if props.button_on_press_with_enabled {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("on_press_with");
+            self.add_plain("(|| ");
+            self.add_type("Message");
+            self.add_operator("::");
+            self.add_plain(&format!("{}Pressed", to_pascal_case(&name)));
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+
+        if props.button_on_press_maybe_enabled {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("on_press_maybe");
+            self.add_plain("(Some(");
+            self.add_type("Message");
+            self.add_operator("::");
+            self.add_plain(&format!("{}Pressed", to_pascal_case(&name)));
+            self.add_plain("))");
+            self.indent_level -= 1;
+        }
+
+
+        // Clip
+        if props.clip {
+            self.add_newline();
+            self.indent_level += 1;
+            self.add_indent();
+            self.add_operator(".");
+            self.add_function("clip");
+            self.add_plain("(");
+            self.add_keyword("true");
+            self.add_plain(")");
+            self.indent_level -= 1;
+        }
+
         // Style - only add if not Primary (default)
         match props.button_style {
             ButtonStyleType::Secondary => {
@@ -2964,7 +3965,7 @@ impl<'a> CodeGenerator<'a> {
 
         // Padding
         if props.padding != (Padding { top: 5.0, bottom: 5.0, right: 10.0, left: 10.0 }) {
-            self.generate_padding(&props.padding);
+            self.generate_padding(&props.padding, props.padding_mode);
         }
     }
 
@@ -3175,80 +4176,68 @@ impl<'a> CodeGenerator<'a> {
     fn generate_toggler_properties(&mut self, props: &Properties) {
         if props.toggler_size != iced::widget::toggler::Toggler::<Theme>::DEFAULT_SIZE {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("size");
             self.add_plain("(");
             self.add_number(&format!("{}", props.toggler_size));
             self.add_plain(")");
-            self.indent_level -= 1;
         }
         
         if props.toggler_spacing != iced::widget::toggler::Toggler::<Theme>::DEFAULT_SIZE / 2.0 {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("spacing");
             self.add_plain("(");
             self.add_number(&format!("{}", props.toggler_spacing));
             self.add_plain(")");
-            self.indent_level -= 1;
         }
         
         if !props.toggler_label.is_empty() {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("label");
             self.add_plain("(");
             self.add_string(&format!("\"{}\"", props.toggler_label));
             self.add_plain(")");
-            self.indent_level -= 1;
         }
 
         if !matches!(props.width, Length::Shrink) {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("width");
             self.add_plain("(");
             self.add_length(props.width);
             self.add_plain(")");
-            self.indent_level -= 1;
         }
     }
     
     fn generate_picklist_properties(&mut self, props: &Properties) {
         if !props.picklist_placeholder.is_empty() && props.picklist_placeholder != "Choose an option..." {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("placeholder");
             self.add_plain("(");
             self.add_string(&format!("\"{}\"", props.picklist_placeholder));
             self.add_plain(")");
-            self.indent_level -= 1;
         }
         
         if !matches!(props.width, Length::Shrink) {
             self.add_newline();
-            self.indent_level += 1;
             self.add_indent();
             self.add_operator(".");
             self.add_function("width");
             self.add_plain("(");
             self.add_length(props.width);
             self.add_plain(")");
-            self.indent_level -= 1;
         }
 
         if props.padding != (Padding { top: 5.0, bottom: 5.0, right: 10.0, left: 10.0 }) {
-            self.generate_padding(&props.padding);
+            self.generate_padding(&props.padding, props.padding_mode);
         }
     }
     
@@ -3582,45 +4571,46 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
-    fn generate_padding(&mut self, padding: &Padding) {
-        // Check if all padding values are the same
-        if padding.top == padding.right 
-            && padding.top == padding.bottom 
-            && padding.top == padding.left {
-            // Use shorthand
-            self.add_newline();
-//            self.indent_level += 1;
-            self.add_indent();
-            self.add_operator(".");
-            self.add_function("padding");
-            self.add_plain("(");
-            self.add_number(&format!("{:.1}", padding.top));
-            self.add_plain(")");
-//            self.indent_level -= 1;
-        } else {
-            // Generate full Padding struct
-            self.add_newline();
-//            self.indent_level += 1;
-            self.add_indent();
-            self.add_operator(".");
-            self.add_function("padding");
-            self.add_plain("(");
-            self.add_type("Padding");
-            self.add_plain(" { ");
-            self.add_plain("top: ");
-            self.add_number(&format!("{:.1}", padding.top));
-            self.add_plain(", ");
-            self.add_plain("right: ");
-            self.add_number(&format!("{:.1}", padding.right));
-            self.add_plain(", ");
-            self.add_plain("bottom: ");
-            self.add_number(&format!("{:.1}", padding.bottom));
-            self.add_plain(", ");
-            self.add_plain("left: ");
-            self.add_number(&format!("{:.1}", padding.left));
-            self.add_plain(" })");
-//            self.indent_level -= 1;
+    fn generate_padding(&mut self, padding: &Padding, padding_mode: PaddingMode) {
+        self.add_newline();
+        self.add_indent();
+        self.add_operator(".");
+        self.add_function("padding");
+        self.add_plain("(");
+        
+        match padding_mode {
+            PaddingMode::Uniform => {
+                // .padding(10.0)
+                self.add_number(&format!("{:.1}", padding.top));
+            }
+            PaddingMode::Symmetric => {
+                // .padding([vertical, horizontal])
+                self.add_plain("[");
+                self.add_number(&format!("{:.1}", padding.top));
+                self.add_plain(", ");
+                self.add_number(&format!("{:.1}", padding.left));
+                self.add_plain("]");
+            }
+            PaddingMode::Individual => {
+                // .padding(Padding { top, right, bottom, left })
+                self.add_type("Padding");
+                self.add_plain(" { ");
+                self.add_plain("top: ");
+                self.add_number(&format!("{:.1}", padding.top));
+                self.add_plain(", ");
+                self.add_plain("right: ");
+                self.add_number(&format!("{:.1}", padding.right));
+                self.add_plain(", ");
+                self.add_plain("bottom: ");
+                self.add_number(&format!("{:.1}", padding.bottom));
+                self.add_plain(", ");
+                self.add_plain("left: ");
+                self.add_number(&format!("{:.1}", padding.left));
+                self.add_plain(" }");
+            }
         }
+        
+        self.add_plain(")");
     }
 
     fn add_length(&mut self, length: Length) {
@@ -4085,4 +5075,182 @@ pub fn generate_container_style_tokens(
     builder.add_plain("}");
 
     builder.into_tokens()
+}
+
+struct ImportTracker {
+    used_widgets: HashSet<&'static str>,
+    
+    uses_length: bool,
+    uses_alignment: bool,
+    uses_padding: bool,
+    uses_color: bool,
+    
+    // Text properties
+    uses_text_line_height: bool,
+    uses_text_wrapping: bool,
+    uses_text_shaping: bool,
+    uses_text_alignment: bool,
+    
+    // Mouse
+    uses_mouse: bool,
+    uses_mouse_interaction: bool,
+    uses_mouse_scroll_delta: bool,
+    
+    // Other
+    uses_point: bool,
+    uses_font: bool,
+    uses_border: bool,
+    uses_shadow: bool,
+    uses_background: bool,
+    uses_vector: bool,
+}
+
+impl ImportTracker {
+    fn new() -> Self {
+        Self {
+            used_widgets: HashSet::new(),
+            uses_length: false,
+            uses_alignment: false,
+            uses_padding: false,
+            uses_color: false,
+            uses_text_line_height: false,
+            uses_text_wrapping: false,
+            uses_text_shaping: false,
+            uses_text_alignment: false,
+            uses_mouse: false,
+            uses_mouse_interaction: false,
+            uses_mouse_scroll_delta: false,
+            uses_point: false,
+            uses_font: false,
+            uses_border: false,
+            uses_shadow: false,
+            uses_background: false,
+            uses_vector: false,
+        }
+    }
+    
+    fn scan_widget(&mut self, widget: &Widget) {
+        let props = &widget.properties;
+        
+        // Track widget type
+        match widget.widget_type {
+            WidgetType::Container => { self.used_widgets.insert("container"); }
+            WidgetType::Row => { self.used_widgets.insert("row"); }
+            WidgetType::Column => { self.used_widgets.insert("column"); }
+            WidgetType::Button => { self.used_widgets.insert("button"); }
+            WidgetType::Text => { self.used_widgets.insert("text"); }
+            WidgetType::TextInput => { self.used_widgets.insert("text_input"); }
+            WidgetType::Checkbox => { self.used_widgets.insert("checkbox"); }
+            WidgetType::Radio => { self.used_widgets.insert("radio"); }
+            WidgetType::Slider => { self.used_widgets.insert("slider"); }
+            WidgetType::VerticalSlider => { self.used_widgets.insert("vertical_slider"); }
+            WidgetType::ProgressBar => { self.used_widgets.insert("progress_bar"); }
+            WidgetType::Toggler => { self.used_widgets.insert("toggler"); }
+            WidgetType::PickList => { self.used_widgets.insert("pick_list"); }
+            WidgetType::Scrollable => { self.used_widgets.insert("scrollable"); }
+            WidgetType::Space => { self.used_widgets.insert("space"); }
+            WidgetType::Rule => { self.used_widgets.insert("rule"); }
+            WidgetType::Image => { self.used_widgets.insert("image"); }
+            WidgetType::Svg => { self.used_widgets.insert("svg"); }
+            WidgetType::Tooltip => { self.used_widgets.insert("tooltip"); }
+            WidgetType::ComboBox => { self.used_widgets.insert("combo_box"); }
+            WidgetType::Markdown => { self.used_widgets.insert("markdown"); }
+            WidgetType::MouseArea => { 
+                self.used_widgets.insert("mouse_area");
+                self.uses_mouse = true;
+            }
+            WidgetType::QRCode => { self.used_widgets.insert("qr_code"); }
+            WidgetType::Stack => { self.used_widgets.insert("stack"); }
+            WidgetType::Themer => { self.used_widgets.insert("themer"); }
+            WidgetType::Pin => { self.used_widgets.insert("pin"); }
+        }
+        
+        // Track if any Length is used (always true if widget exists)
+        self.uses_length = true;
+        
+        // Track Alignment if used in Row/Column
+        if matches!(widget.widget_type, WidgetType::Row | WidgetType::Column) {
+            if props.align_items != Alignment::Start {
+                self.uses_alignment = true;
+            }
+        }
+        
+        // Track Padding
+        if props.padding_mode == PaddingMode::Individual {
+            self.uses_padding = true;
+        }
+        
+        // Track Container-specific features
+        if widget.widget_type == WidgetType::Container {
+            if props.border_width > 0.0 {
+                self.uses_border = true;
+            }
+            if props.background_color.a > 0.0 {
+                self.uses_background = true;
+                self.uses_color = true;
+            }
+            if props.has_shadow {
+                self.uses_shadow = true;
+                self.uses_vector = true;
+            }
+            if props.align_x != ContainerAlignX::Left || props.align_y != ContainerAlignY::Top {
+                self.uses_alignment = true;
+            }
+        }
+        
+        // Track Text properties
+        if widget.widget_type == WidgetType::Text {
+            if props.text_color.a > 0.0 {
+                self.uses_color = true;
+            }
+            if props.font != FontType::Default {
+                self.uses_font = true;
+            }
+            if props.line_height != text::LineHeight::default() {
+                self.uses_text_line_height = true;
+            }
+            if props.wrap != text::Wrapping::default() {
+                self.uses_text_wrapping = true;
+            }
+            if props.shaping != text::Shaping::default() {
+                self.uses_text_shaping = true;
+            }
+            if props.text_align_x != text::Alignment::default() || 
+               props.text_align_y != iced::alignment::Vertical::Top {
+                self.uses_text_alignment = true;
+                self.uses_alignment = true;
+            }
+        }
+        
+        // Track TextInput properties
+        if widget.widget_type == WidgetType::TextInput {
+            if props.text_input_font != FontType::Default {
+                self.uses_font = true;
+            }
+            if props.text_input_line_height != text::LineHeight::default() {
+                self.uses_text_line_height = true;
+            }
+            if props.text_input_alignment != ContainerAlignX::Left {
+                self.uses_alignment = true;
+            }
+        }
+        
+        // Track MouseArea event handlers
+        if widget.widget_type == WidgetType::MouseArea {
+            if props.mousearea_on_scroll {
+                self.uses_mouse_scroll_delta = true;
+            }
+            if props.mousearea_on_move {
+                self.uses_point = true;
+            }
+            if props.mousearea_interaction.is_some() {
+                self.uses_mouse_interaction = true;
+            }
+        }
+        
+        // Recursively scan children
+        for child in &widget.children {
+            self.scan_widget(child);
+        }
+    }
 }
